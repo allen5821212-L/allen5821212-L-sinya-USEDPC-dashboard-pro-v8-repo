@@ -1,0 +1,36 @@
+*{box-sizing:border-box}html,body{margin:0;padding:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,'Noto Sans TC','PingFang TC',sans-serif}
+.wrap{max-width:1200px;margin:0 auto;padding:16px}
+h1{font-size:28px;margin:16px 0 6px}
+h2{font-size:20px;margin:0 0 12px}
+.sub{color:#555;margin:0 0 16px}
+.badge{display:inline-block;font-size:12px;background:#eef;padding:2px 8px;border-radius:999px;margin-left:8px}
+.card{background:linear-gradient(#fff,#fbfbfd);border:1px solid #e7e7ee;border-radius:16px;box-shadow:0 1px 3px rgba(0,0,0,.03);margin:16px 0;padding:16px}
+.grid{display:grid;gap:12px}.g2{grid-template-columns:repeat(2,minmax(0,1fr))}.g3{grid-template-columns:repeat(3,minmax(0,1fr))}.g4{grid-template-columns:repeat(4,minmax(0,1fr))}
+.field{display:flex;flex-direction:column;gap:6px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+label{font-size:12px;color:#444}
+input[type="text"],input[type="number"],input[type="date"],input[type="search"],select{width:100%;padding:8px 10px;border:1px solid #ddd;border-radius:10px;background:#fff;outline:none}
+input[type="checkbox"]{transform:scale(1.2);margin-right:6px}
+.actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+button{padding:8px 12px;border-radius:10px;border:1px solid #ddd;background:#0b64d8;color:#fff;cursor:pointer}
+button.ghost{background:#fff;color:#0b64d8}
+button.danger{background:#e33;color:#fff;border-color:#e33}
+button:disabled{opacity:.5;cursor:not-allowed}
+.mt8{margin-top:8px}.mt12{margin-top:12px}
+.toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.toolbar .spacer{flex:1}
+label.chk{display:flex;align-items:center;gap:6px;font-size:14px;color:#333}
+.tableWrap{overflow:auto;border:1px solid #eee;border-radius:12px}
+table{width:100%;border-collapse:collapse;font-size:14px}
+thead th{position:sticky;top:0;background:#fafafe;border-bottom:1px solid #eee;padding:10px;text-align:left;white-space:nowrap;cursor:pointer}
+tbody td{border-bottom:1px solid #f2f2f8;padding:8px 10px;vertical-align:top}
+td .row-actions{display:flex;gap:6px}
+.totals{display:flex;gap:16px;flex-wrap:wrap;font-size:15px}
+.batch{display:flex;gap:16px;align-items:center;flex-wrap:wrap}
+.foot{color:#666;text-align:center;margin-bottom:40px}
+.import{display:inline-flex;align-items:center;gap:6px;background:#fff;color:#0b64d8;border:1px solid #ddd;padding:6px 10px;border-radius:10px;cursor:pointer}
+.import input{display:none}
+.toast{}
+#tiersTable{width:100%;border-collapse:collapse;font-size:14px}
+#tiersTable th,#tiersTable td{border-bottom:1px solid #eee;padding:8px;text-align:left}
+@media (max-width: 900px){.g4{grid-template-columns:repeat(2,minmax(0,1fr))}}
