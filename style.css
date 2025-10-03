@@ -86,3 +86,6 @@ td[contenteditable="true"]{background:#0b1218; outline:none; border-radius:6px}
 .badge{padding:2px 8px; border-radius:999px; font-size:12px; border:1px solid #2a3748; background:#10161d; color:#c7d2de}
 
 .muted{color:var(--muted); font-size:12px}
+
+textarea{background:#0c1015; border:1px solid #1f2937; color:var(--text); padding:10px 12px; border-radius:12px; outline:none}
+.generator{margin-top:8px; padding-top:8px; border-top:1px dashed var(--border)}

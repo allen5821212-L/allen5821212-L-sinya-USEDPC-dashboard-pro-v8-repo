@@ -10,6 +10,20 @@
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
+
+function parseCoeffRow(str){
+  if(!str) return null;
+  // Split by comma/space/newline
+  const parts = String(str).split(/[\s,]+/).filter(Boolean).slice(0,18);
+  if(parts.length===0) return null;
+  const arr = parts.map(x => Number(x));
+  if(arr.some(x => !Number.isFinite(x))) return null;
+  // If fewer than 18, pad with last value or 1.00
+  while(arr.length<18) arr.push(arr[arr.length-1] ?? 1.00);
+  return arr.slice(0,18);
+}
+
+
 const state = {
   items: [],
   filter: { category: "", keyword: "" },
@@ -118,7 +132,8 @@ function computePrice(item, globals, today = new Date()){
 
   // 5) monthly recovery coefficient (by month index 1..18)
   const monthIndex = Math.min(18, Math.max(1, Math.floor(daysInStock/30)+1));
-  const coeff = Array.isArray(globals.monthlyCoeffs)? Number(globals.monthlyCoeffs[monthIndex-1]||1) : 1;
+  const sourceCoeffs = (Array.isArray(item.monthlyCoeffs) && item.monthlyCoeffs.length)? item.monthlyCoeffs : globals.monthlyCoeffs;
+  const coeff = Array.isArray(sourceCoeffs)? Number(sourceCoeffs[monthIndex-1]||1) : 1;
   price = price * coeff;
   steps.afterMonthlyCoeff = price;
 
@@ -196,6 +211,7 @@ function render(){
         <input type="checkbox" data-field="repair" ${item.repair?"checked":""}/>
       </td>
       <td contenteditable="true" data-field="repairNote">${escapeHtml(item.repairNote||"")}${diag}</td>
+      <td contenteditable="true" data-field="monthlyCoeffsStr">${(item.monthlyCoeffs && item.monthlyCoeffs.length)? escapeHtml(item.monthlyCoeffs.join(", ")): ""}</td>
       <td>
         <button class="btn ghost btnDel">刪除</button>
       </td>
@@ -254,6 +270,9 @@ function onCellEdit(e){
   const raw = cell.textContent.trim();
   if(["cost","margin","market","marketAdj"].includes(field)){
     state.items[originalIndex][field] = raw==="" ? "" : Number(raw);
+  }else if(field==="monthlyCoeffsStr"){
+    const arr = parseCoeffRow(raw);
+    state.items[originalIndex].monthlyCoeffs = arr || [];
   }else{
     state.items[originalIndex][field] = raw;
   }
@@ -358,8 +377,13 @@ $("#btnExportJSON").addEventListener("click", ()=>{
   a.click();
 });
 $("#btnExportCSV").addEventListener("click", ()=>{
-  const headers = ["name","category","date","cost","margin","market","marketAdj","repair","repairNote"];
-  const rows = state.items.map(it => headers.map(h => (it[h]===undefined||it[h]===null)?"":String(it[h]).replace(/"/g,'""')));
+  const headers = ["name","category","date","cost","margin","market","marketAdj","repair","repairNote","monthlyCoeffs"];
+  const rows = state.items.map(it => headers.map(h => {
+    let v = it[h];
+    if(h==="monthlyCoeffs" && Array.isArray(it.monthlyCoeffs)) v = it.monthlyCoeffs.join(",");
+    if(v===undefined||v===null) v="";
+    return String(v).replace(/"/g,'""');
+  }));
   const csv = [headers.join(","), ...rows.map(r => r.map(v => /[",\n]/.test(v)?`"${v}"`:v).join(","))].join("\n");
   const blob = new Blob([csv], {type:"text/csv;charset=utf-8"});
   const a = document.createElement("a");
@@ -429,7 +453,8 @@ $("#btnImport").addEventListener("click", async ()=>{
       market: num(r[idx.market], true),
       marketAdj: num(r[idx.marketAdj], true),
       repair: (r[idx.repair]||"").toLowerCase()==="true",
-      repairNote: r[idx.repairNote]||""
+      repairNote: r[idx.repairNote]||"",
+      monthlyCoeffs: parseCoeffRow(idx.monthlyCoeffs!==undefined ? r[idx.monthlyCoeffs] : "") || []
     }));
     render();
     alert("CSV 匯入完成");
@@ -448,7 +473,8 @@ $("#btnImport").addEventListener("click", async ()=>{
       market: num(it.market, true),
       marketAdj: num(it.marketAdj, true),
       repair: Boolean(it.repair),
-      repairNote: it.repairNote||""
+      repairNote: it.repairNote||"",
+      monthlyCoeffs: parseCoeffRow(it.monthlyCoeffs) || []
     }));
     render();
     alert("XLSX 匯入完成");
@@ -564,4 +590,56 @@ document.addEventListener("DOMContentLoaded", ()=>{
   buildCoeffGrid();
   render();
   $("#newDate").value = new Date().toISOString().slice(0,10);
+  // wire paste & generator
+
+// ---- Coeff paste & apply ----
+function getPasteCoeffs(){
+  const txt = document.getElementById("coeffPaste")?.value || "";
+  const arr = parseCoeffRow(txt);
+  if(!arr){ alert("無法解析係數，請確認格式"); return null; }
+  return arr;
+}
+const btnPasteGlobal = document.getElementById("btnCoeffPasteGlobal");
+if(btnPasteGlobal){
+  btnPasteGlobal.onclick = ()=>{
+    const arr = getPasteCoeffs(); if(!arr) return;
+    state.globals.monthlyCoeffs = arr;
+    buildCoeffGrid();
+    render();
+    alert("已套用到全域 1–18 月係數");
+  };
+}
+const btnPasteItems = document.getElementById("btnCoeffPasteItems");
+if(btnPasteItems){
+  btnPasteItems.onclick = ()=>{
+    const arr = getPasteCoeffs(); if(!arr) return;
+    const filtered = state.items.map((it, idx) => ({it, idx})).filter(x => filterItem(x.it));
+    for(const {idx} of filtered){
+      state.items[idx].monthlyCoeffs = arr.slice();
+    }
+    render();
+    alert("已套用到目前篩選的單品（覆寫）");
+  };
+}
+
+// ---- Auto-generate ladder by month ----
+const btnGen = document.getElementById("btnGenLadder");
+if(btnGen){
+  btnGen.onclick = ()=>{
+    const s = Number(document.getElementById("genStartMonth").value)||1;
+    const e = Number(document.getElementById("genEndMonth").value)||12;
+    const p = Number(document.getElementById("genPerMonthPct").value)||0;
+    if(e < s){ alert("結束月不可小於起始月"); return; }
+    const parts = [];
+    for(let m=s; m<=e; m++){
+      const days = m*30;
+      parts.push(`${days}/${p}`);
+    }
+    document.getElementById("ladderInput").value = parts.join(",");
+    pullGlobalsFromUI();
+    render();
+    alert("已按月生成階梯並套用");
+  };
+}
+
 });
