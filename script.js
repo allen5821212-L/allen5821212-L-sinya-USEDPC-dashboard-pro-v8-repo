@@ -1,893 +1,522 @@
-// ============ Utilities ============
+
+/* SINYA USEDPC Dashboard v8.1 (Fixed)
+ * - Calculation order fixed: margin -> ladder -> min margin -> not-below-market -> rounding -> tail
+ * - Tail won't break constraints; if it does, it will bump back to nearest valid tail value.
+ * - Batch apply affects only filtered items.
+ * - Diagnostics mode reveals intermediate steps.
+ * - LocalStorage scenarios; JSON/CSV/XLSX import/export.
+ */
+
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
-const fmt = (n) => isFinite(n) ? n.toLocaleString('zh-TW', {maximumFractionDigits:0}) : '-';
-const todayStr = () => new Date().toISOString().slice(0,10);
-const parseNum = (v, def=0) => {
-  if (v === null || v === undefined || v === '') return def;
-  const n = Number(v);
-  return isFinite(n) ? n : def;
+
+const state = {
+  items: [],
+  filter: { category: "", keyword: "" },
+  diagnostics: false,
+  globals: {
+    roundUnit: 10,
+    roundMode: "nearest",
+    tailMode: "9",
+    defaultMarketAdj: 0.05,
+    minMarginFloor: 0.10,
+    notBelowMarketPct: -0.05,
+    ladder: [ {days:30, adj:-0.05}, {days:60, adj:-0.10}, {days:90, adj:-0.15} ],
+  }
 };
 
-// LocalStorage Keys
-const LS_SETTINGS = 'sinya_usedpc_settings_v80';
-const LS_LIST = 'sinya_usedpc_list_v80';
-const LS_SCENARIOS = 'sinya_usedpc_scenarios_v80';
+function parseLadder(str){
+  if(!str) return [];
+  return str.split(",")
+    .map(s => s.trim())
+    .filter(Boolean)
+    .map(seg => {
+      const [d,p] = seg.split("/").map(x => x.trim());
+      return { days: Number(d), adj: Number(p) };
+    })
+    .filter(lp => !Number.isNaN(lp.days) && !Number.isNaN(lp.adj))
+    .sort((a,b)=>a.days-b.days);
+}
 
-// ============ Global Elements ============
-const roundUnitEl = $('#roundUnit');
-const roundModeEl = $('#roundMode');
-const tailModeEl  = $('#tailMode');
-const defaultMarketAdjEl = $('#defaultMarketAdj');
-const minMarginFloorEl = $('#minMarginFloor');
-const marketFloorPctEl = $('#marketFloorPct');
+function roundByMode(value, unit, mode){
+  if(unit<=0) return value;
+  const q = value/unit;
+  if(mode==="nearest") return Math.round(q)*unit;
+  if(mode==="ceil") return Math.ceil(q)*unit;
+  if(mode==="floor") return Math.floor(q)*unit;
+  return value;
+}
 
-const saveSettingsBtn = $('#saveSettings');
-const loadSettingsBtn = $('#loadSettings');
-const resetSettingsBtn = $('#resetSettings');
+function applyTail(value, tailMode, constraintFloor){
+  // constraintFloor: minimum allowed price after constraints (may be -Infinity)
+  if(tailMode==="none") return value;
+  const v = Math.max(value, 0);
+  let candidate = v;
+  if(tailMode==="9"){
+    // change last digit to 9 but don't go below constraint
+    const base = Math.floor(v/10)*10 + 9;
+    if(base >= constraintFloor) candidate = base;
+    else {
+      // bump to next valid ending 9 at or above floor
+      const floor10 = Math.floor(constraintFloor/10)*10 + 9;
+      candidate = Math.max(base, floor10);
+    }
+  }else if(tailMode==="99"){
+    // change last two digits to 99
+    const base = Math.floor(v/100)*100 + 99;
+    if(base >= constraintFloor) candidate = base;
+    else {
+      const floor100 = Math.floor(constraintFloor/100)*100 + 99;
+      candidate = Math.max(base, floor100);
+    }
+  }
+  return candidate;
+}
 
-// Tiers
-const tiersBody = $('#tiersBody');
-const tierDaysEl = $('#tierDays');
-const tierAdjEl = $('#tierAdj');
-const addTierBtn = $('#addTier');
-const resetTiersBtn = $('#resetTiers');
+function computePrice(item, globals, today = new Date()){
+  const steps = {}; // diagnostics
+  const cost = Number(item.cost)||0;
+  const margin = Number(item.margin)||0;
+  const market = item.market===""||item.market===null||item.market===undefined ? null : Number(item.market);
+  const marketAdj = (item.marketAdj===""||item.marketAdj===null||item.marketAdj===undefined)
+    ? Number(globals.defaultMarketAdj||0) : Number(item.marketAdj);
+
+  const roundUnit = Number(globals.roundUnit)||1;
+  const roundMode = globals.roundMode||"nearest";
+  const tailMode  = globals.tailMode||"none";
+  const minMarginFloor = Number(globals.minMarginFloor)||0;
+  const notBelowMarketPct = Number(globals.notBelowMarketPct)||0;
+  const ladder = Array.isArray(globals.ladder)? globals.ladder : [];
+
+  // 1) days in stock
+  const d = item.date ? new Date(item.date) : today;
+  const daysInStock = Math.max(0, Math.floor((today - d)/(1000*60*60*24)));
+  steps.daysInStock = daysInStock;
+
+  // 2) adjusted market
+  let adjustedMarket = null;
+  if(market!==null){
+    adjustedMarket = market * (1 + marketAdj);
+  }
+  steps.adjustedMarket = adjustedMarket;
+
+  // 3) initial price by margin
+  let price = cost * (1 + margin);
+  steps.initialMarginPrice = price;
+
+  // 4) apply ladder by largest threshold <= days
+  let ladderAdj = 0;
+  for(const l of ladder){
+    if(daysInStock >= l.days) ladderAdj = l.adj;
+  }
+  if(ladderAdj!==0){
+    price = price * (1 + ladderAdj);
+  }
+  steps.afterLadder = price;
+  steps.ladderAdj = ladderAdj;
+
+  // 5) enforce minimum margin floor
+  const minPriceByMargin = cost * (1 + minMarginFloor);
+  if(price < minPriceByMargin){
+    price = minPriceByMargin;
+  }
+  steps.afterMinMargin = price;
+
+  // 6) enforce not-below-market (%)
+  // if notBelowMarketPct is -0.05 => price >= adjustedMarket * (1 - 0.05)
+  let floorByMarket = -Infinity;
+  if(adjustedMarket!==null){
+    floorByMarket = adjustedMarket * (1 + notBelowMarketPct);
+    if(price < floorByMarket) price = floorByMarket;
+  }
+  steps.afterMarketFloor = price;
+  steps.marketFloor = floorByMarket;
+
+  // 7) rounding
+  price = roundByMode(price, roundUnit, roundMode);
+  steps.afterRounding = price;
+
+  // 8) tail optimization without breaking floors
+  const floorConstraint = Math.max(minPriceByMargin, floorByMarket);
+  price = applyTail(price, tailMode, floorConstraint);
+  steps.afterTail = price;
+
+  // profit
+  const profit = price - cost;
+
+  return { price: Math.round(price), profit: Math.round(profit), steps };
+}
+
+function render(){
+  const tbody = $("#itemsTable tbody");
+  tbody.innerHTML = "";
+  let sumPrice = 0, sumProfit = 0;
+  const filtered = state.items.filter(filterItem);
+  filtered.forEach((item, idx) => {
+    const {price, profit, steps} = computePrice(item, state.globals);
+    sumPrice += price;
+    sumProfit += profit;
+    const tr = document.createElement("tr");
+
+    const diag = state.diagnostics ? `
+      <div class="badge mono">市價調整後: ${fmt(steps.adjustedMarket)}</div>
+      <div class="badge mono">初步: ${fmt(steps.initialMarginPrice)}</div>
+      <div class="badge mono">階梯(${steps.ladderAdj}): ${fmt(steps.afterLadder)}</div>
+      <div class="badge mono">底線: ${fmt(steps.afterMinMargin)}</div>
+      <div class="badge mono">市價下限: ${fmt(steps.afterMarketFloor)}</div>
+      <div class="badge mono">四捨五入: ${fmt(steps.afterRounding)}</div>
+      <div class="badge mono">尾數: ${fmt(steps.afterTail)}</div>
+    ` : "";
+
+    tr.innerHTML = `
+      <td>${idx+1}</td>
+      <td contenteditable="true" data-field="name">${escapeHtml(item.name||"")}</td>
+      <td>
+        <select data-field="category">
+          ${["NB","DT","MON","DIY","OTH"].map(c=>`<option ${item.category===c?"selected":""}>${c}</option>`).join("")}
+        </select>
+      </td>
+      <td><input type="date" data-field="date" value="${item.date?item.date.split("T")[0]:""}"/></td>
+      <td class="mono">${daysInStock(item.date)}</td>
+      <td contenteditable="true" class="mono" data-field="cost">${item.cost??""}</td>
+      <td contenteditable="true" class="mono" data-field="margin">${item.margin??""}</td>
+      <td contenteditable="true" class="mono" data-field="market">${item.market??""}</td>
+      <td contenteditable="true" class="mono" data-field="marketAdj">${item.marketAdj??""}</td>
+      <td class="mono">${price}</td>
+      <td class="mono">${profit}</td>
+      <td>
+        <input type="checkbox" data-field="repair" ${item.repair?"checked":""}/>
+      </td>
+      <td contenteditable="true" data-field="repairNote">${escapeHtml(item.repairNote||"")}${diag}</td>
+      <td>
+        <button class="btn ghost btnDel">刪除</button>
+      </td>
+    `;
+    tbody.appendChild(tr);
+  });
+
+  $("#sumPrice").textContent = sumPrice.toLocaleString();
+  $("#sumProfit").textContent = sumProfit.toLocaleString();
+
+  // Wire events for editable cells & deletes
+  tbody.querySelectorAll("[contenteditable='true']").forEach(cell => {
+    cell.addEventListener("blur", onCellEdit);
+  });
+  tbody.querySelectorAll("select[data-field]").forEach(sel => sel.addEventListener("change", onSelectEdit));
+  tbody.querySelectorAll("input[type='date'][data-field]").forEach(inp => inp.addEventListener("change", onInputEdit));
+  tbody.querySelectorAll("input[type='checkbox'][data-field]").forEach(inp => inp.addEventListener("change", onCheckboxEdit));
+  tbody.querySelectorAll(".btnDel").forEach((btn, i) => btn.addEventListener("click", () => {
+    const filteredIndices = state.items.map((it, idx) => ({it, idx})).filter(x => filterItem(x.it)).map(x => x.idx);
+    const originalIndex = filteredIndices[i];
+    state.items.splice(originalIndex,1);
+    render();
+  }));
+}
+
+function filterItem(item){
+  const c = state.filter.category;
+  const k = (state.filter.keyword||"").trim().toLowerCase();
+  const okCategory = !c || item.category===c;
+  const okK = !k || ( (item.name||"").toLowerCase().includes(k) || (item.repairNote||"").toLowerCase().includes(k) );
+  return okCategory && okK;
+}
+
+function fmt(x){
+  if(x===null || x===undefined) return "—";
+  return Math.round(x);
+}
+function escapeHtml(s){
+  return String(s).replace(/[&<>"']/g, m=>({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[m]));
+}
+function daysInStock(dateStr){
+  if(!dateStr) return 0;
+  const d = new Date(dateStr);
+  const today = new Date();
+  return Math.max(0, Math.floor((today - d)/(1000*60*60*24)));
+}
+
+// Edits
+function onCellEdit(e){
+  const cell = e.target;
+  const field = cell.dataset.field;
+  const rowIndex = [...cell.parentElement.parentElement.children].indexOf(cell.parentElement);
+  // Row index in filtered view -> map to original index
+  const filteredIndices = state.items.map((it, idx) => ({it, idx})).filter(x => filterItem(x.it)).map(x => x.idx);
+  const originalIndex = filteredIndices[rowIndex];
+  const raw = cell.textContent.trim();
+  if(["cost","margin","market","marketAdj"].includes(field)){
+    state.items[originalIndex][field] = raw==="" ? "" : Number(raw);
+  }else{
+    state.items[originalIndex][field] = raw;
+  }
+  render();
+}
+function onSelectEdit(e){
+  const sel = e.target;
+  const field = sel.dataset.field;
+  const rowIndex = [...sel.parentElement.parentElement.children].indexOf(sel.parentElement);
+  const filteredIndices = state.items.map((it, idx) => ({it, idx})).filter(x => filterItem(x.it)).map(x => x.idx);
+  const originalIndex = filteredIndices[rowIndex];
+  state.items[originalIndex][field] = sel.value;
+  render();
+}
+function onInputEdit(e){
+  const inp = e.target;
+  const field = inp.dataset.field;
+  const rowIndex = [...inp.parentElement.parentElement.children].indexOf(inp.parentElement);
+  const filteredIndices = state.items.map((it, idx) => ({it, idx})).filter(x => filterItem(x.it)).map(x => x.idx);
+  const originalIndex = filteredIndices[rowIndex];
+  state.items[originalIndex][field] = inp.value;
+  render();
+}
+function onCheckboxEdit(e){
+  const inp = e.target;
+  const field = inp.dataset.field;
+  const rowIndex = [...inp.parentElement.parentElement.children].indexOf(inp.parentElement);
+  const filteredIndices = state.items.map((it, idx) => ({it, idx})).filter(x => filterItem(x.it)).map(x => x.idx);
+  const originalIndex = filteredIndices[rowIndex];
+  state.items[originalIndex][field] = inp.checked;
+  render();
+}
+
+// Globals wiring
+function pullGlobalsFromUI(){
+  state.globals.roundUnit = Number($("#roundUnit").value)||1;
+  state.globals.roundMode = $("#roundMode").value;
+  state.globals.tailMode  = $("#tailMode").value;
+  state.globals.defaultMarketAdj = Number($("#defaultMarketAdj").value)||0;
+  state.globals.minMarginFloor   = Number($("#minMarginFloor").value)||0;
+  state.globals.notBelowMarketPct= Number($("#notBelowMarketPct").value)||0;
+  state.globals.ladder = parseLadder($("#ladderInput").value);
+}
+["#roundUnit","#roundMode","#tailMode","#defaultMarketAdj","#minMarginFloor","#notBelowMarketPct","#ladderInput"]
+  .forEach(sel => $(sel).addEventListener("input", ()=>{ pullGlobalsFromUI(); render(); }));
+
+// Filter wiring
+$("#btnApplyFilter").addEventListener("click", ()=>{
+  state.filter.category = $("#filterCategory").value;
+  state.filter.keyword = $("#searchKeyword").value;
+  render();
+});
+$("#btnClearFilter").addEventListener("click", ()=>{
+  $("#filterCategory").value = "";
+  $("#searchKeyword").value = "";
+  state.filter = {category:"", keyword:""};
+  render();
+});
+
+// Batch apply
+$("#btnBatchApply").addEventListener("click", ()=>{
+  const m = $("#batchMargin").value.trim();
+  const a = $("#batchMarketAdj").value.trim();
+  const filtered = state.items.map((it, idx) => ({it, idx})).filter(x => filterItem(x.it));
+  for(const {idx} of filtered){
+    if(m!=="") state.items[idx].margin = Number(m);
+    if(a!=="") state.items[idx].marketAdj = Number(a);
+  }
+  render();
+});
+
+// Add item
+function toggleRepairNoteRow(){
+  $("#repairNoteRow").style.display = $("#newRepair").checked ? "" : "none";
+}
+$("#newRepair").addEventListener("change", toggleRepairNoteRow);
+$("#btnAdd").addEventListener("click", ()=>{
+  const it = {
+    name: $("#newName").value.trim()||"未命名",
+    category: $("#newCategory").value,
+    date: $("#newDate").value||new Date().toISOString().slice(0,10),
+    cost: Number($("#newCost").value)||0,
+    margin: $("#newMargin").value===""? "" : Number($("#newMargin").value),
+    market: $("#newMarket").value===""? "" : Number($("#newMarket").value),
+    marketAdj: $("#newMarketAdj").value===""? "" : Number($("#newMarketAdj").value),
+    repair: $("#newRepair").checked,
+    repairNote: $("#newRepairNote").value.trim()
+  };
+  state.items.push(it);
+  // clear inputs
+  ["#newName","#newDate","#newCost","#newMargin","#newMarket","#newMarketAdj","#newRepairNote"].forEach(sel => $(sel).value="");
+  $("#newRepair").checked=false; toggleRepairNoteRow();
+  render();
+});
+
+// Import/Export
+$("#btnExportJSON").addEventListener("click", ()=>{
+  const blob = new Blob([JSON.stringify({globals:state.globals, items:state.items}, null, 2)], {type:"application/json"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "usedpc_scenario_v8_1.json";
+  a.click();
+});
+$("#btnExportCSV").addEventListener("click", ()=>{
+  const headers = ["name","category","date","cost","margin","market","marketAdj","repair","repairNote"];
+  const rows = state.items.map(it => headers.map(h => (it[h]===undefined||it[h]===null)?"":String(it[h]).replace(/"/g,'""')));
+  const csv = [headers.join(","), ...rows.map(r => r.map(v => /[",\n]/.test(v)?`"${v}"`:v).join(","))].join("\n");
+  const blob = new Blob([csv], {type:"text/csv;charset=utf-8"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "usedpc_items_v8_1.csv";
+  a.click();
+});
+$("#btnExportXLSX").addEventListener("click", ()=>{
+  if(typeof XLSX==="undefined"){
+    alert("XLSX 函式庫尚未載入（需要上傳到 GitHub Pages 後使用）。");
+    return;
+  }
+  const ws = XLSX.utils.json_to_sheet(state.items);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "items");
+  const wbout = XLSX.write(wb, {bookType:"xlsx", type:"array"});
+  const blob = new Blob([wbout], {type:"application/octet-stream"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "usedpc_items_v8_1.xlsx";
+  a.click();
+});
+
+let importedFile = null;
+$("#fileImport").addEventListener("change", (e)=>{
+  importedFile = e.target.files[0] || null;
+});
+$("#btnImport").addEventListener("click", async ()=>{
+  if(!importedFile){ alert("請先選擇檔案"); return; }
+  const ext = importedFile.name.split(".").pop().toLowerCase();
+  if(ext==="json"){
+    const txt = await importedFile.text();
+    try{
+      const data = JSON.parse(txt);
+      if(data.globals) Object.assign(state.globals, data.globals);
+      if(Array.isArray(data.items)) state.items = data.items;
+      pushGlobalsToUI();
+      render();
+      alert("JSON 匯入完成");
+    }catch(err){ alert("JSON 解析失敗：" + err.message); }
+  }else if(ext==="csv"){
+    const txt = await importedFile.text();
+    const rows = txt.split(/\r?\n/).filter(Boolean).map(line => {
+      // simple CSV parse (handles quotes)
+      const cells = [];
+      let cur="", inQ=false;
+      for(let i=0;i<line.length;i++){
+        const ch=line[i];
+        if(ch==='"' ){
+          if(inQ && line[i+1]==='"'){ cur+='"'; i++; }
+          else inQ=!inQ;
+        }else if(ch===',' && !inQ){
+          cells.push(cur); cur="";
+        }else cur+=ch;
+      }
+      cells.push(cur);
+      return cells;
+    });
+    const headers = rows.shift();
+    const idx = Object.fromEntries(headers.map((h,i)=>[h,i]));
+    state.items = rows.map(r => ({
+      name: r[idx.name]||"",
+      category: r[idx.category]||"NB",
+      date: r[idx.date]||new Date().toISOString().slice(0,10),
+      cost: num(r[idx.cost]),
+      margin: num(r[idx.margin], true),
+      market: num(r[idx.market], true),
+      marketAdj: num(r[idx.marketAdj], true),
+      repair: (r[idx.repair]||"").toLowerCase()==="true",
+      repairNote: r[idx.repairNote]||""
+    }));
+    render();
+    alert("CSV 匯入完成");
+  }else if(ext==="xlsx"){
+    if(typeof XLSX==="undefined"){ alert("XLSX 函式庫尚未載入（需上傳後使用）"); return; }
+    const buf = await importedFile.arrayBuffer();
+    const wb = XLSX.read(buf, {type:"array"});
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const arr = XLSX.utils.sheet_to_json(ws, {defval:""});
+    state.items = arr.map(it => ({
+      name: it.name||"",
+      category: it.category||"NB",
+      date: it.date||new Date().toISOString().slice(0,10),
+      cost: num(it.cost),
+      margin: num(it.margin, true),
+      market: num(it.market, true),
+      marketAdj: num(it.marketAdj, true),
+      repair: Boolean(it.repair),
+      repairNote: it.repairNote||""
+    }));
+    render();
+    alert("XLSX 匯入完成");
+  }else{
+    alert("不支援的副檔名");
+  }
+});
+
+function num(v, allowEmpty=false){
+  if(v==="" && allowEmpty) return "";
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
+// Diagnostics
+$("#toggleDiagnostics").addEventListener("change", (e)=>{
+  state.diagnostics = e.target.checked;
+  render();
+});
 
 // Scenarios
-const scenarioListEl = $('#scenarioList');
-const scenarioNameEl = $('#scenarioName');
-const scenarioSaveBtn = $('#scenarioSave');
-const scenarioDeleteBtn = $('#scenarioDelete');
-const scenarioCompareBtn = $('#scenarioCompare');
-const compareArea = $('#compareArea');
-
-const nameEl   = $('#itemName');
-const catEl    = $('#itemCat');
-const costEl   = $('#itemCost');
-const marginEl = $('#itemMargin');
-const marketEl = $('#itemMarket');
-const marketAdjEl = $('#itemMarketAdj');
-const recycleDateEl = $('#itemRecycleDate');
-const noteEl   = $('#itemNote');
-const hasRepairEl = $('#hasRepair');
-const repairNoteEl = $('#repairNote');
-const addItemBtn = $('#addItem');
-const autoBestEl = $('#autoBest');
-const runBestBtn = $('#runBest');
-
-const searchEl = $('#search');
-const saveListBtn = $('#saveList');
-const loadListBtn = $('#loadList');
-const clearListBtn = $('#clearList');
-const exportCSVBtn = $('#exportCSV');
-const exportXLSBtn = $('#exportXLS');
-const exportXLSXBtn = $('#exportXLSX');
-const importJSONEl = $('#importJSON');
-const exportJSONBtn = $('#exportJSON');
-
-const totalPriceEl = $('#totalPrice');
-const totalGPEl = $('#totalGP');
-const totalCountEl = $('#totalCount');
-
-const listBody = $('#listBody');
-const listTable = $('#listTable');
-
-// Batch
-const selectAllEl = $('#selectAll');
-const hdrSelectEl = $('#hdrSelect');
-const batchMarginEl = $('#batchMargin');
-const applyBatchMarginBtn = $('#applyBatchMargin');
-const batchMarketAdjEl = $('#batchMarketAdj');
-const applyBatchMarketAdjBtn = $('#applyBatchMarketAdj');
-const batchCatEl = $('#batchCat');
-const batchOnlyFilteredEl = $('#batchOnlyFiltered');
-
-// ============ State ============
-let items = []; // array of item objects
-let sortKey = 'name';
-let sortAsc = true;
-
-// ============ Settings ============
-function defaultSettings(){
-  return {
-    roundUnit: 100,
-    roundMode: 'round', // 'round' | 'ceil' | 'floor'
-    tailMode: 'none',   // 'none' | '9' | '99'
-    defaultMarketAdj: 0.00,
-    minMarginFloor: 0.00,
-    marketFloorPct: -0.10,
-    tiers: [
-      {days:30, adj:-0.05},
-      {days:60, adj:-0.10},
-      {days:90, adj:-0.15},
-    ],
-  };
-}
-
-function getSettingsUI(){
-  // collect tiers from table
-  const tiers = Array.from(tiersBody.querySelectorAll('tr')).map(tr => {
-    const days = parseNum(tr.querySelector('.tierDays').value, 0);
-    const adj  = parseNum(tr.querySelector('.tierAdj').value, 0);
-    return {days, adj};
-  }).sort((a,b)=> a.days - b.days);
-  return {
-    roundUnit: parseNum(roundUnitEl.value, 1),
-    roundMode: roundModeEl.value,
-    tailMode: tailModeEl.value,
-    defaultMarketAdj: parseNum(defaultMarketAdjEl.value, 0),
-    minMarginFloor: parseNum(minMarginFloorEl.value, 0),
-    marketFloorPct: parseNum(marketFloorPctEl.value, -0.10),
-    tiers,
-  };
-}
-
-function setSettingsUI(s){
-  roundUnitEl.value = String(s.roundUnit);
-  roundModeEl.value = s.roundMode;
-  tailModeEl.value = s.tailMode;
-  defaultMarketAdjEl.value = s.defaultMarketAdj;
-  minMarginFloorEl.value = s.minMarginFloor ?? 0;
-  marketFloorPctEl.value = s.marketFloorPct ?? -0.10;
-  // tiers render
-  renderTiers(s.tiers || []);
-}
-
-function renderTiers(tiers){
-  tiersBody.innerHTML = '';
-  tiers.forEach((t, idx)=>{
-    const tr = document.createElement('tr');
-    tr.innerHTML = `
-      <td><input class="tierDays" type="number" step="1" value="${t.days}"/></td>
-      <td><input class="tierAdj" type="number" step="0.01" value="${t.adj}"/></td>
-      <td><button class="delTier" data-i="${idx}">刪除</button></td>`;
-    tiersBody.appendChild(tr);
-  });
-  $$('.delTier').forEach(btn => btn.addEventListener('click', ()=>{
-    const i = Number(btn.dataset.i);
-    const cur = getSettingsUI().tiers;
-    cur.splice(i,1);
-    renderTiers(cur);
-  }));
-}
-
-function saveSettings(){
-  const s = getSettingsUI();
-  localStorage.setItem(LS_SETTINGS, JSON.stringify(s));
-  toast('設定已保存');
-}
-
-function loadSettings(){
-  const raw = localStorage.getItem(LS_SETTINGS);
-  const s = raw ? JSON.parse(raw) : defaultSettings();
-  setSettingsUI(s);
-  toast('設定已載入');
-}
-
-function resetSettings(){
-  const s = defaultSettings();
-  setSettingsUI(s);
-  toast('已套用預設值（尚未保存）');
-}
-
-addTierBtn.addEventListener('click', ()=>{
-  const d = parseNum(tierDaysEl.value, null);
-  const a = parseNum(tierAdjEl.value, null);
-  if (d===null || a===null){ alert('請輸入門檻天數與調整％'); return; }
-  const cur = getSettingsUI().tiers;
-  cur.push({days:d, adj:a});
-  renderTiers(cur.sort((x,y)=>x.days-y.days));
-  tierDaysEl.value = ''; tierAdjEl.value = '';
-});
-resetTiersBtn.addEventListener('click', ()=> renderTiers(defaultSettings().tiers));
-
-// ============ Scenarios ============
-function loadScenarioMap(){
-  const raw = localStorage.getItem(LS_SCENARIOS);
-  return raw ? JSON.parse(raw) : {};
-}
-function saveScenarioMap(m){
-  localStorage.setItem(LS_SCENARIOS, JSON.stringify(m));
-}
-function refreshScenarioList(){
-  const m = loadScenarioMap();
-  scenarioListEl.innerHTML = '';
-  Object.keys(m).forEach(k=>{
-    const opt = document.createElement('option');
-    opt.value = k; opt.textContent = k;
-    scenarioListEl.appendChild(opt);
-  });
-}
 function saveScenario(){
-  const name = (scenarioNameEl.value || '').trim();
-  if(!name){ alert('請輸入情境名稱'); return; }
-  const s = getSettingsUI();
-  const m = loadScenarioMap();
-  m[name] = s;
-  saveScenarioMap(m);
-  refreshScenarioList();
-  selectOption(scenarioListEl, name);
-  toast('情境已儲存/更新');
+  const payload = { globals: state.globals, items: state.items };
+  localStorage.setItem("sinya_usedpc_v8_1", JSON.stringify(payload));
+  alert("已儲存情境（本機）");
 }
-function deleteScenario(){
-  const sel = scenarioListEl.value;
-  if (!sel){ alert('請先選擇情境'); return; }
-  const m = loadScenarioMap();
-  delete m[sel];
-  saveScenarioMap(m);
-  refreshScenarioList();
-  toast('情境已刪除');
-}
-function applyScenario(){
-  const sel = scenarioListEl.value;
-  const m = loadScenarioMap();
-  if (sel && m[sel]){
-    setSettingsUI(m[sel]);
-    toast('已套用情境：' + sel);
+function loadScenario(){
+  const txt = localStorage.getItem("sinya_usedpc_v8_1");
+  if(!txt){ alert("尚無已儲存的情境"); return; }
+  try{
+    const data = JSON.parse(txt);
+    if(data.globals) Object.assign(state.globals, data.globals);
+    if(Array.isArray(data.items)) state.items = data.items;
+    pushGlobalsToUI();
     render();
-  }
+    alert("已載入情境");
+  }catch(e){ alert("讀取失敗：" + e.message); }
 }
-function compareScenarios(){
-  const m = loadScenarioMap();
-  const names = Object.keys(m);
-  if (names.length < 2){ alert('至少需要兩個情境'); return; }
-  const rows = [];
-  for (const n of names){
-    const s = m[n];
-    let totPrice = 0, totGP = 0;
-    for (const it of items){
-      const calc = finalPriceFor(it, s);
-      totPrice += calc.final;
-      totGP += (calc.final - it.cost);
-    }
-    rows.push({ name:n, total: totPrice, gp: totGP });
-  }
-  rows.sort((a,b)=> b.total - a.total);
-  let html = '<div class="tableWrap"><table><thead><tr><th>情境</th><th>二手總價</th><th>毛利總額</th></tr></thead><tbody>';
-  for (const r of rows){
-    html += `<tr><td>${escapeHTML(r.name)}</td><td>${fmt(r.total)}</td><td>${fmt(r.gp)}</td></tr>`;
-  }
-  html += '</tbody></table></div>';
-  compareArea.innerHTML = html;
+$("#btnSaveScenario").addEventListener("click", saveScenario);
+$("#btnLoadScenario").addEventListener("click", loadScenario);
+$("#btnReset").addEventListener("click", ()=>{
+  if(confirm("確定要重置所有內容？")){ seed(); render(); }
+});
+
+function pushGlobalsToUI(){
+  $("#roundUnit").value = state.globals.roundUnit;
+  $("#roundMode").value = state.globals.roundMode;
+  $("#tailMode").value = state.globals.tailMode;
+  $("#defaultMarketAdj").value = state.globals.defaultMarketAdj;
+  $("#minMarginFloor").value = state.globals.minMarginFloor;
+  $("#notBelowMarketPct").value = state.globals.notBelowMarketPct;
+  $("#ladderInput").value = state.globals.ladder.map(x => `${x.days}/${x.adj}`).join(",");
 }
-
-function selectOption(sel, val){
-  Array.from(sel.options).forEach(o=> o.selected = (o.value === val));
-}
-
-// ============ Item Logic ============
-function addItem(autoBest=true){
-  const name = (nameEl.value || '').trim();
-  const cat  = (catEl.value || '').trim();
-  const cost = parseNum(costEl.value, 0);
-  const margin = parseNum(marginEl.value, 0.10);
-  const market = (marketEl.value === '' ? null : parseNum(marketEl.value, null));
-  const marketAdj = (marketAdjEl.value === '' ? null : parseNum(marketAdjEl.value, null));
-  const recycled = recycleDateEl.value || todayStr();
-  const note = (noteEl.value || '').trim();
-  const hasRepair = !!hasRepairEl.checked;
-  const repairNote = (repairNoteEl.value || '').trim();
-
-  if(!name){ alert('請輸入品名'); return; }
-  if(cost < 0){ alert('成本不可為負'); return; }
-
-  const id = 'i' + Math.random().toString(36).slice(2,9);
-  const item = { id, name, cat, cost, margin, market, marketAdj, recycled, note, hasRepair, repairNote, selected:false };
-  items.push(item);
-  clearAddForm();
-  render();
-  toast('已新增 1 筆');
-}
-
-function clearAddForm(){
-  nameEl.value = '';
-  catEl.value = '';
-  costEl.value = '';
-  marginEl.value = '0.10';
-  marketEl.value = '';
-  marketAdjEl.value = '';
-  recycleDateEl.value = '';
-  noteEl.value = '';
-  hasRepairEl.checked = false;
-  repairNoteEl.value = '';
-}
-
-function removeItem(id){
-  items = items.filter(x => x.id !== id);
-  render();
-}
-
-function editMargin(id, newMargin){
-  const x = items.find(x => x.id === id);
-  if (!x) return;
-  x.margin = parseNum(newMargin, x.margin);
-  render();
-}
-
-function editMarketAdj(id, newAdj){
-  const x = items.find(x => x.id === id);
-  if (!x) return;
-  x.marketAdj = (newAdj === '' ? null : parseNum(newAdj, x.marketAdj));
-  render();
-}
-
-function daysBetween(d1, d2){
-  const t1 = new Date(d1).setHours(0,0,0,0);
-  const t2 = new Date(d2).setHours(0,0,0,0);
-  return Math.max(0, Math.round((t2 - t1) / 86400000));
-}
-
-function applyRounding(v, unit, mode){
-  if(unit <= 1) {
-    if (mode === 'ceil') return Math.ceil(v);
-    if (mode === 'floor') return Math.floor(v);
-    return Math.round(v);
-  }
-  const div = v / unit;
-  let r;
-  if (mode === 'ceil') r = Math.ceil(div);
-  else if (mode === 'floor') r = Math.floor(div);
-  else r = Math.round(div);
-  return r * unit;
-}
-
-function applyTail(v, tailMode){
-  if (tailMode === 'none') return v;
-  const s = Math.floor(v).toString();
-  if (tailMode === '9'){
-    return Number(s.slice(0, -1) + '9');
-  }
-  if (tailMode === '99'){
-    if (s.length <= 2) return 99;
-    return Number(s.slice(0, -2) + '99');
-  }
-  return v;
-}
-
-// Apply tiers: find greatest threshold <= invDays, sum adj (or just latest). We'll use latest (like ladder override).
-function tierFactor(invDays, tiers){
-  let adj = 0;
-  for (const t of tiers){
-    if (invDays >= t.days) adj = t.adj;
-    else break;
-  }
-  return 1 + adj;
-}
-
-function finalPriceFor(item, settings){
-  const cost = item.cost;
-  const marginPrice = cost * (1 + item.margin);
-  const adj = (item.marketAdj === null || item.marketAdj === undefined) ? settings.defaultMarketAdj : item.marketAdj;
-  const marketCandidate = (item.market != null) ? (item.market * (1 + adj)) : null;
-  let base = (marketCandidate != null) ? marketCandidate : marginPrice;
-
-  // Rounding & tail
-  base = applyRounding(base, settings.roundUnit, settings.roundMode);
-  base = applyTail(base, settings.tailMode);
-
-  // Overdue tiers by inventory days
-  const invDays = daysBetween(item.recycled, todayStr());
-  const fact = tierFactor(invDays, settings.tiers || []);
-  let final = Math.max(0, Math.round(base * fact));
-
-  // Guards: minimum margin floor & market floor %
-  const minMarginFloor = settings.minMarginFloor || 0;
-  const marketFloorPct = settings.marketFloorPct ?? -0.10;
-
-  const minByMargin = Math.round(cost * (1 + minMarginFloor));
-  if (final < minByMargin) final = minByMargin;
-
-  if (item.market != null){
-    const minByMarket = Math.round(item.market * (1 + marketFloorPct));
-    if (final < minByMarket) final = minByMarket;
-  }
-
-  return { final, invDays, marginPrice, marketCandidate };
-}
-
-// ============ Render & Totals ============
-function render(){
-  const settings = getSettingsUI();
-  const q = (searchEl.value || '').trim().toLowerCase();
-
-  // sort
-  items.sort((a,b)=>{
-    let va, vb;
-    if (sortKey === 'name'){ va = a.name || ''; vb = b.name || ''; }
-    else if (sortKey === 'cat'){ va = a.cat || ''; vb = b.cat || ''; }
-    else if (sortKey === 'cost'){ va = a.cost || 0; vb = b.cost || 0; }
-    else if (sortKey === 'margin'){ va = a.margin || 0; vb = b.margin || 0; }
-    else if (sortKey === 'recycled'){ va = a.recycled || ''; vb = b.recycled || ''; }
-    else if (sortKey === 'final'){
-      va = finalPriceFor(a, settings).final;
-      vb = finalPriceFor(b, settings).final;
-    } else { va = 0; vb = 0; }
-    if (typeof va === 'string'){ va = va.toLowerCase(); vb = (vb||'').toLowerCase(); }
-    return sortAsc ? (va > vb ? 1 : va < vb ? -1 : 0) : (va < vb ? 1 : va > vb ? -1 : 0);
-  });
-
-  let html = '';
-  let totPrice = 0;
-  let totGP = 0;
-  let cnt = 0;
-
-  for (const it of items){
-    // filter
-    const blob = [it.name, it.cat, it.note, it.repairNote].join(' ').toLowerCase();
-    if (q && !blob.includes(q)) continue;
-
-    const calc = finalPriceFor(it, settings);
-    const gp = calc.final - it.cost;
-    totPrice += calc.final;
-    totGP += gp;
-    cnt++;
-
-    html += `<tr>
-      <td><input type="checkbox" class="rowSel" data-id="${it.id}" ${it.selected?'checked':''}></td>
-      <td>${escapeHTML(it.name)}</td>
-      <td>${escapeHTML(it.cat||'')}</td>
-      <td>${fmt(it.cost)}</td>
-      <td><input type="number" step="0.01" value="${it.margin}" data-id="${it.id}" class="editMargin" style="width:90px" /></td>
-      <td>${it.market != null ? fmt(it.market) : '-'}</td>
-      <td><input type="number" step="0.01" value="${it.marketAdj ?? ''}" data-id="${it.id}" class="editMarketAdj" style="width:110px" placeholder="（預設）" /></td>
-      <td>${it.recycled}</td>
-      <td>${calc.invDays}</td>
-      <td>${fmt(calc.final)}</td>
-      <td>${fmt(gp)}</td>
-      <td><div class="row-actions"><button data-id="${it.id}" class="delBtn">刪除</button></div></td>
-    </tr>`;
-  }
-
-  listBody.innerHTML = html;
-  totalPriceEl.textContent = fmt(totPrice);
-  totalGPEl.textContent = fmt(totGP);
-  totalCountEl.textContent = fmt(cnt);
-
-  // bind events after render
-  $$('.delBtn').forEach(btn=> btn.addEventListener('click', e=> removeItem(btn.dataset.id)));
-  $$('.editMargin').forEach(inp=> inp.addEventListener('change', e=> editMargin(inp.dataset.id, Number(inp.value))));
-  $$('.editMarketAdj').forEach(inp=> inp.addEventListener('change', e=> editMarketAdj(inp.dataset.id, inp.value)));
-  $$('.rowSel').forEach(chk=> chk.addEventListener('change', e=> {
-    const it = items.find(x => x.id === chk.dataset.id);
-    if (it){ it.selected = chk.checked; }
-  }));
-}
-
-// ============ CSV / Excel (.xls XML 2003) / Excel (.xlsx OOXML ZIP) / JSON ============
-function exportCSV(){
-  const rows = exportRows();
-  const csv = rows.map(r => r.map(v => {
-    if (v === null || v === undefined) return '';
-    const s = String(v);
-    if (s.includes(',') || s.includes('"') || s.includes('\n')){
-      return '"' + s.replace(/"/g,'""') + '"';
-    }
-    return s;
-  }).join(',')).join('\n');
-  downloadBlob(csv, 'text/csv;charset=utf-8;', 'sinya_usedpc_list.csv');
-}
-
-function exportXLS(){
-  const rows = exportRows();
-  let xmlRows = '';
-  for (const r of rows){
-    xmlRows += '<Row>' + r.map(v => {
-      const isNum = typeof v === 'number';
-      return `<Cell><Data ss:Type="${isNum?'Number':'String'}">${escapeXML(String(v))}</Data></Cell>`;
-    }).join('') + '</Row>';
-  }
-  const xml = `<?xml version="1.0"?>
-  <?mso-application progid="Excel.Sheet"?>
-  <Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
-    xmlns:o="urn:schemas-microsoft-com:office:office"
-    xmlns:x="urn:schemas-microsoft-com:office:excel"
-    xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
-    <Worksheet ss:Name="UsedPC">
-      <Table>${xmlRows}</Table>
-    </Worksheet>
-  </Workbook>`;
-  downloadBlob(xml, 'application/vnd.ms-excel', 'sinya_usedpc_list.xls');
-}
-
-function exportXLSX(){
-  const rows = exportRows();
-
-  // Build OOXML parts
-  const sheetXml = buildSheetXML(rows);
-  const files = [
-    {name:'[Content_Types].xml', data:buildContentTypes()},
-    {name:'_rels/.rels', data:buildRelsRoot()},
-    {name:'xl/workbook.xml', data:buildWorkbook()},
-    {name:'xl/_rels/workbook.xml.rels', data:buildWorkbookRels()},
-    {name:'xl/worksheets/sheet1.xml', data:sheetXml},
+function seed(){
+  state.items = [
+    { name:"測A", category:"NB",  date:new Date().toISOString().slice(0,10), cost:10000, margin:0.20, market:"", marketAdj:"", repair:false, repairNote:"" },
+    { name:"測B", category:"NB",  date:new Date().toISOString().slice(0,10), cost:10000, margin:0.05, market:11000, marketAdj:"", repair:false, repairNote:"" },
+    { name:"測C", category:"DT",  date:new Date(Date.now()-90*86400000).toISOString().slice(0,10), cost:20000, margin:0.30, market:26000, marketAdj:0, repair:false, repairNote:"" }
   ];
-
-  const zipBytes = makeZip(files);
-  const blob = new Blob([zipBytes], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
-  downloadURL(URL.createObjectURL(blob), 'sinya_usedpc_list.xlsx');
-}
-
-function exportRows(){
-  const settings = getSettingsUI();
-  const header = ['品名','分類','成本','毛利率','市場價','市價調整％','回收日','庫存天數','最終售價','毛利額','備註','有維修','維修備註'];
-  const rows = [header];
-  for (const it of items){
-    const calc = finalPriceFor(it, settings);
-    const gp = calc.final - it.cost;
-    rows.push([
-      it.name, it.cat||'', it.cost, it.margin, (it.market!=null?it.market:''),
-      (it.marketAdj!=null?it.marketAdj:''), it.recycled, calc.invDays, calc.final, gp,
-      it.note||'', it.hasRepair ? 'Y' : '', it.repairNote||''
-    ]);
-  }
-  return rows;
-}
-
-// OOXML helpers
-function buildContentTypes(){
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
-  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
-  <Default Extension="xml" ContentType="application/xml"/>
-  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
-  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
-</Types>`;
-}
-function buildRelsRoot(){
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
-</Relationships>`;
-}
-function buildWorkbook(){
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
-  xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-  <sheets>
-    <sheet name="UsedPC" sheetId="1" r:id="rId1"/>
-  </sheets>
-</workbook>`;
-}
-function buildWorkbookRels(){
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
-</Relationships>`;
-}
-function colLetter(n){
-  let s = ''; n++;
-  while(n>0){ const m = (n-1)%26; s = String.fromCharCode(65+m)+s; n = Math.floor((n-1)/26); }
-  return s;
-}
-function buildSheetXML(rows){
-  let xml = `<?xml version="1.0" encoding="UTF-8"?>
-  <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-    <sheetData>`;
-  for (let r=0; r<rows.length; r++){
-    xml += `<row r="${r+1}">`;
-    const row = rows[r];
-    for (let c=0; c<row.length; c++){
-      const v = row[c];
-      const cellRef = colLetter(c) + (r+1);
-      if (typeof v === 'number'){
-        xml += `<c r="${cellRef}"><v>${v}</v></c>`;
-      } else {
-        xml += `<c r="${cellRef}" t="inlineStr"><is><t>${escapeXML(String(v))}</t></is></c>`;
-      }
-    }
-    xml += `</row>`;
-  }
-  xml += `</sheetData></worksheet>`;
-  return xml;
-}
-
-// Minimal ZIP (STORED, no compression)
-function makeZip(files){
-  function crc32(buf){
-    let c = ~0;
-    for (let i=0; i<buf.length; i++){
-      c ^= buf[i];
-      for (let k=0; k<8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
-    }
-    return ~c >>> 0;
-  }
-  function encUTF8(str){
-    return new TextEncoder().encode(str);
-  }
-  function writeUint32LE(arr, v){
-    arr.push(v & 0xFF, (v>>>8)&0xFF, (v>>>16)&0xFF, (v>>>24)&0xFF);
-  }
-  function writeUint16LE(arr, v){
-    arr.push(v & 0xFF, (v>>>8)&0xFF);
-  }
-
-  let localParts = [];
-  let centralParts = [];
-  let offset = 0;
-
-  files.forEach(f=>{
-    const nameBytes = encUTF8(f.name);
-    const dataBytes = encUTF8(f.data);
-    const crc = crc32(dataBytes);
-    const compSize = dataBytes.length;
-    const uncompSize = dataBytes.length;
-
-    // Local file header
-    let lh = [];
-    writeUint32LE(lh, 0x04034b50);
-    writeUint16LE(lh, 20); // version needed
-    writeUint16LE(lh, 0);  // flags
-    writeUint16LE(lh, 0);  // method 0 STORED
-    writeUint16LE(lh, 0);  // mod time
-    writeUint16LE(lh, 0);  // mod date
-    writeUint32LE(lh, crc);
-    writeUint32LE(lh, compSize);
-    writeUint32LE(lh, uncompSize);
-    writeUint16LE(lh, nameBytes.length);
-    writeUint16LE(lh, 0);  // extra length
-
-    localParts.push(new Uint8Array(lh));
-    localParts.push(nameBytes);
-    localParts.push(dataBytes);
-
-    // Central directory header
-    let ch = [];
-    writeUint32LE(ch, 0x02014b50);
-    writeUint16LE(ch, 20); // version made by
-    writeUint16LE(ch, 20); // version needed
-    writeUint16LE(ch, 0);  // flags
-    writeUint16LE(ch, 0);  // method
-    writeUint16LE(ch, 0);  // mod time
-    writeUint16LE(ch, 0);  // mod date
-    writeUint32LE(ch, crc);
-    writeUint32LE(ch, compSize);
-    writeUint32LE(ch, uncompSize);
-    writeUint16LE(ch, nameBytes.length);
-    writeUint16LE(ch, 0);  // extra
-    writeUint16LE(ch, 0);  // comment
-    writeUint16LE(ch, 0);  // disk start
-    writeUint16LE(ch, 0);  // internal attrs
-    writeUint32LE(ch, 0);  // external attrs
-    writeUint32LE(ch, offset);
-    centralParts.push(new Uint8Array(ch));
-    centralParts.push(nameBytes);
-
-    // update offset
-    offset += lh.length + nameBytes.length + dataBytes.length;
-  });
-
-  // End of central directory
-  let centralSize = centralParts.reduce((s,u)=>s+u.length,0);
-  let localSize = localParts.reduce((s,u)=>s+u.length,0);
-  let eocd = [];
-  writeUint32LE(eocd, 0x06054b50);
-  writeUint16LE(eocd, 0); // disk
-  writeUint16LE(eocd, 0); // start disk
-  writeUint16LE(eocd, files.length);
-  writeUint16LE(eocd, files.length);
-  writeUint32LE(eocd, centralSize);
-  writeUint32LE(eocd, localSize);
-  writeUint16LE(eocd, 0); // comment
-
-  const parts = [...localParts, ...centralParts, new Uint8Array(eocd)];
-  let total = parts.reduce((s,u)=>s+u.length,0);
-  let out = new Uint8Array(total);
-  let pos = 0;
-  parts.forEach(u=> { out.set(u, pos); pos += u.length; });
-  return out;
-}
-
-// ============ JSON / LocalStorage ============
-function importJSON(file){
-  const fr = new FileReader();
-  fr.onload = () => {
-    try {
-      const obj = JSON.parse(fr.result);
-      if (Array.isArray(obj)){
-        items = obj;
-        render();
-        toast('JSON 已匯入');
-      } else {
-        alert('JSON 格式不正確：應為陣列');
-      }
-    } catch(e){
-      alert('解析 JSON 失敗：' + e.message);
-    }
+  state.filter = {category:"", keyword:""};
+  state.diagnostics = false;
+  state.globals = {
+    roundUnit: 10,
+    roundMode: "nearest",
+    tailMode: "9",
+    defaultMarketAdj: 0.05,
+    minMarginFloor: 0.10,
+    notBelowMarketPct: -0.05,
+    ladder: [ {days:30, adj:-0.05}, {days:60, adj:-0.10}, {days:90, adj:-0.15} ],
   };
-  fr.readAsText(file);
+  pushGlobalsToUI();
+  $("#toggleDiagnostics").checked = false;
 }
-function exportJSON(){
-  const blob = new Blob([JSON.stringify(items, null, 2)], {type:'application/json'});
-  downloadURL(URL.createObjectURL(blob), 'sinya_usedpc_list.json');
-}
-function saveList(){
-  localStorage.setItem(LS_LIST, JSON.stringify(items));
-  toast('清單已保存');
-}
-function loadList(){
-  const raw = localStorage.getItem(LS_LIST);
-  if (!raw){ toast('尚無保存清單'); return; }
-  try {
-    const arr = JSON.parse(raw);
-    if (Array.isArray(arr)){
-      items = arr;
-      render();
-      toast('清單已載入');
-    } else {
-      alert('保存內容已損壞');
-    }
-  } catch(e){
-    alert('讀取清單錯誤：' + e.message);
-  }
-}
-function clearList(){
-  if (!confirm('確定清空清單？')) return;
-  items = [];
+
+document.addEventListener("DOMContentLoaded", ()=>{
+  seed();
   render();
-}
-
-// ============ Sorting & Search ============
-function headerClick(e){
-  const key = e.target.getAttribute('data-sort');
-  if (!key) return;
-  if (sortKey === key) sortAsc = !sortAsc;
-  else { sortKey = key; sortAsc = true; }
-  render();
-}
-
-// ============ Batch / Best Price ============
-function getFilteredIds(){
-  const q = (searchEl.value || '').trim().toLowerCase();
-  return items.filter(it => {
-    const blob = [it.name, it.cat, it.note, it.repairNote].join(' ').toLowerCase();
-    return !q || blob.includes(q);
-  }).map(x => x.id);
-}
-function getSelectedIds(){
-  return items.filter(x => x.selected).map(x => x.id);
-}
-function pickTarget(){
-  // Priority: if any selected, use selected; else if batchOnlyFiltered, use filtered; else if batchCat given, filter by category; else all.
-  let target = items;
-  const filteredIds = getFilteredIds();
-  const selectedIds = getSelectedIds();
-  const cat = (batchCatEl.value || '').trim().toLowerCase();
-
-  if (selectedIds.length){
-    target = items.filter(x => selectedIds.includes(x.id));
-  } else if (batchOnlyFilteredEl.checked){
-    target = items.filter(x => filteredIds.includes(x.id));
-  }
-
-  if (cat){
-    target = target.filter(x => (x.cat||'').toLowerCase() === cat);
-  }
-  return target;
-}
-function applyBatchMargin(){
-  const v = batchMarginEl.value;
-  if (v === ''){ alert('請輸入毛利率'); return; }
-  const m = parseNum(v, null);
-  if (m === null){ alert('毛利率格式錯誤'); return; }
-  const target = pickTarget();
-  target.forEach(x => x.margin = m);
-  render();
-  toast(`已套用毛利率至 ${target.length} 筆`);
-}
-function applyBatchMarketAdj(){
-  const v = batchMarketAdjEl.value;
-  if (v === ''){ alert('請輸入市價調整％'); return; }
-  const adj = parseNum(v, null);
-  if (adj === null){ alert('格式錯誤'); return; }
-  const target = pickTarget();
-  target.forEach(x => x.marketAdj = adj);
-  render();
-  toast(`已套用市價調整％至 ${target.length} 筆`);
-}
-function runBestAll(){
-  render();
-  toast('已套用最佳價流程（目前規則已全部生效）');
-}
-
-// ============ Helpers ============
-function escapeHTML(s){
-  return (s||'').replace(/[&<>"']/g, c => ({
-    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
-  }[c]));
-}
-function escapeXML(s){
-  return (s||'').replace(/[<>&'"]/g, c => ({
-    '<':'&lt;','>':'&gt;','&':'&amp;',"'":'&apos;','"':'&quot;'
-  }[c]));
-}
-function toast(msg){
-  let t = document.createElement('div');
-  t.className = 'toast';
-  t.textContent = msg;
-  Object.assign(t.style, {
-    position:'fixed', left:'50%', bottom:'24px', transform:'translateX(-50%)',
-    background:'#111', color:'#fff', padding:'8px 12px', borderRadius:'999px',
-    fontSize:'13px', opacity:'0', transition:'opacity .2s ease', zIndex:9999
-  });
-  document.body.appendChild(t);
-  requestAnimationFrame(()=> t.style.opacity = '1');
-  setTimeout(()=>{
-    t.style.opacity = '0';
-    setTimeout(()=> t.remove(), 250);
-  }, 1200);
-}
-
-function downloadBlob(content, mime, filename){
-  const blob = new Blob([content], {type: mime});
-  downloadURL(URL.createObjectURL(blob), filename);
-}
-function downloadURL(url, filename){
-  const a = document.createElement('a');
-  a.href = url; a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(()=> URL.revokeObjectURL(url), 1000);
-}
-
-// ============ Bindings ============
-saveSettingsBtn.addEventListener('click', saveSettings);
-loadSettingsBtn.addEventListener('click', loadSettings);
-resetSettingsBtn.addEventListener('click', resetSettings);
-
-scenarioSaveBtn.addEventListener('click', saveScenario);
-scenarioDeleteBtn.addEventListener('click', deleteScenario);
-scenarioListEl.addEventListener('change', applyScenario);
-scenarioCompareBtn.addEventListener('click', compareScenarios);
-
-addItemBtn.addEventListener('click', ()=> addItem(autoBestEl.checked));
-runBestBtn.addEventListener('click', runBestAll);
-
-saveListBtn.addEventListener('click', saveList);
-loadListBtn.addEventListener('click', loadList);
-clearListBtn.addEventListener('click', clearList);
-
-exportCSVBtn.addEventListener('click', exportCSV);
-exportXLSBtn.addEventListener('click', exportXLS);
-exportXLSXBtn.addEventListener('click', exportXLSX);
-exportJSONBtn.addEventListener('click', exportJSON);
-importJSONEl.addEventListener('change', e => {
-  if (e.target.files && e.target.files[0]) importJSON(e.target.files[0]);
+  $("#newDate").value = new Date().toISOString().slice(0,10);
 });
-
-searchEl.addEventListener('input', render);
-listTable.querySelector('thead').addEventListener('click', headerClick);
-
-hdrSelectEl.addEventListener('change', ()=> {
-  const checked = hdrSelectEl.checked;
-  items.forEach(x => x.selected = checked);
-  render();
-});
-selectAllEl.addEventListener('change', ()=> {
-  const checked = selectAllEl.checked;
-  items.forEach(x => x.selected = checked);
-  render();
-});
-applyBatchMarginBtn.addEventListener('click', applyBatchMargin);
-applyBatchMarketAdjBtn.addEventListener('click', applyBatchMarketAdj);
-
-// init
-(function init(){
-  const raw = localStorage.getItem(LS_SETTINGS);
-  const s = raw ? JSON.parse(raw) : defaultSettings();
-  setSettingsUI(s);
-  refreshScenarioList();
-
-  const rawList = localStorage.getItem(LS_LIST);
-  if (rawList){
-    try { items = JSON.parse(rawList) || []; } catch {}
-  }
-  if (!items.length){
-    const d = todayStr();
-    items = [
-      {id:'demo1', name:'ASUS TUF A15', cat:'筆電', cost:22000, margin:0.12, market:25900, marketAdj:null, recycled:d, note:'RTX 4060', hasRepair:false, repairNote:'', selected:false},
-      {id:'demo2', name:'MSI MPG A650GF', cat:'電源供應器', cost:1200, margin:0.20, market:null, marketAdj:null, recycled:d, note:'80+ Gold', hasRepair:false, repairNote:'', selected:false},
-    ];
-  }
-  render();
-})();

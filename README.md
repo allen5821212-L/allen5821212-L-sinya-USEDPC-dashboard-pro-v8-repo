@@ -1,29 +1,36 @@
-# SINYA Used PC Dashboard – Optimizer V8.0
+# SINYA USEDPC Dashboard — v8.1 (Fixed)
 
-**V8.0 新功能**
-- 原生 **.xlsx** 匯出（純前端、無外部 CDN）
-- 逾期降價「多階梯」編輯器（門檻天數×調整％，可增刪排序）
-- **最低毛利率底線**（不得低於成本 × (1+底線)）
-- **不得低於市場價 X％** 保護（可允許略低，例如 -0.05 代表可低 5%）
-- 批次調整支援「只套用目前篩選結果」與「依分類套用」
+上傳到 GitHub Pages 後即可使用（單一靜態頁）。
 
-**延續功能**
-- 單品毛利率即時連動，清單匯總（二手總價／毛利總額）自動更新  
-- 市場價 ×（1+調整%）；若市場價空白→自動回退 Margin  
-- 庫存天數＝「回收日 → 今天」  
-- 四捨五入（1/10/50/100）＋進位/捨去/四捨五入、尾數 9/99  
-- 搜尋、表頭點擊排序  
-- LocalStorage 保存/讀取清單與設定、JSON 匯入/匯出  
-- 匯出 CSV、Excel（.xls）
+## 這版修了什麼？
+- **計算順序固定**：毛利 → 階梯降價 → 最低毛利率底線 → 市價下限％ → 四捨五入 → 尾數優化（不打破約束）。
+- **診斷模式**：切換開關後，每列會顯示中間值方便追錯。
+- **批次套用僅作用於目前篩選結果**（已明確）。
+- **維修紀錄連動**：打勾顯示備註欄位；表格可即時編輯並存回。
+- **匯入/匯出**：JSON/CSV 原生可用；XLSX 需在上線環境使用（已掛 CDN）。
+- **LocalStorage 情境儲存**：可一鍵儲存/載入。
 
-## 部署（GitHub Pages）
-1. 新建公開 repo，將本專案所有檔案放在 **root**  
-2. 可保留 `.github/workflows/pages.yml` 使用 **GitHub Actions** 自動部署；或刪除後改用 Branch 部署  
-3. Settings → Pages 設定來源完成後即可上線
+## 檔案結構
+```
+index.html
+style.css
+script.js
+README.md
+CHANGELOG.md
+VERSION
+```
 
-## .xlsx 實作說明
-- 採用 OOXML（workbook/worksheet）並以簡易 **ZIP（STORED）** 實作打包，純前端產出，Mac/Win Excel 與 Google Sheets 皆可開啟  
-- 若需多 Sheet、樣式、數字格式、寬度自動化等，可在後續版本擴充
+## 部署
+1. 建立新的 GitHub Repo（建議 public）。
+2. 上傳上述所有檔案（或直接上傳 zip 解壓後的內容）。
+3. 到 **Settings → Pages**，Source 選擇 `Deploy from a branch`，分支選 `main`，資料夾選 `/root`。
+4. 儲存後等幾十秒，左上角會出現 Pages 網址，打開即用。
 
-## 授權
-MIT（見 `LICENSE`）
+## 自測資料
+預設內含 3 筆測資（測 A/B/C）對應你提出的檢核案例。  
+也可在「匯出/匯出」區段匯出 JSON，再修改後匯入。
+
+## 注意
+- XLSX 需在上線後才會載入 CDN。若你在本地開啟 `index.html`，XLSX 匯出/匯入按鈕會提示「尚未載入」。  
+- 若需完全離線的 XLSX，請將 `xlsx.full.min.js` 下載到本專案並以相對路徑引用。
+
