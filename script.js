@@ -22,6 +22,7 @@ const state = {
     minMarginFloor: 0.10,
     notBelowMarketPct: -0.05,
     ladder: [ {days:30, adj:-0.05}, {days:60, adj:-0.10}, {days:90, adj:-0.15} ],
+    monthlyCoeffs: Array.from({length:18}, ()=>1.00),
   }
 };
 
@@ -115,7 +116,13 @@ function computePrice(item, globals, today = new Date()){
   steps.afterLadder = price;
   steps.ladderAdj = ladderAdj;
 
-  // 5) enforce minimum margin floor
+  // 5) monthly recovery coefficient (by month index 1..18)
+  const monthIndex = Math.min(18, Math.max(1, Math.floor(daysInStock/30)+1));
+  const coeff = Array.isArray(globals.monthlyCoeffs)? Number(globals.monthlyCoeffs[monthIndex-1]||1) : 1;
+  price = price * coeff;
+  steps.afterMonthlyCoeff = price;
+
+  // 6) enforce minimum margin floor
   const minPriceByMargin = cost * (1 + minMarginFloor);
   if(price < minPriceByMargin){
     price = minPriceByMargin;
@@ -162,6 +169,7 @@ function render(){
       <div class="badge mono">市價調整後: ${fmt(steps.adjustedMarket)}</div>
       <div class="badge mono">初步: ${fmt(steps.initialMarginPrice)}</div>
       <div class="badge mono">階梯(${steps.ladderAdj}): ${fmt(steps.afterLadder)}</div>
+      <div class="badge mono">月係數: ${fmt(steps.afterMonthlyCoeff)}</div>
       <div class="badge mono">底線: ${fmt(steps.afterMinMargin)}</div>
       <div class="badge mono">市價下限: ${fmt(steps.afterMarketFloor)}</div>
       <div class="badge mono">四捨五入: ${fmt(steps.afterRounding)}</div>
@@ -493,6 +501,7 @@ function pushGlobalsToUI(){
   $("#minMarginFloor").value = state.globals.minMarginFloor;
   $("#notBelowMarketPct").value = state.globals.notBelowMarketPct;
   $("#ladderInput").value = state.globals.ladder.map(x => `${x.days}/${x.adj}`).join(",");
+  buildCoeffGrid();
 }
 function seed(){
   state.items = [
@@ -510,13 +519,49 @@ function seed(){
     minMarginFloor: 0.10,
     notBelowMarketPct: -0.05,
     ladder: [ {days:30, adj:-0.05}, {days:60, adj:-0.10}, {days:90, adj:-0.15} ],
+    monthlyCoeffs: Array.from({length:18}, ()=>1.00),
   };
   pushGlobalsToUI();
   $("#toggleDiagnostics").checked = false;
 }
 
+
+// ---- Monthly Coefficients (1–18 months) UI ----
+function buildCoeffGrid(){
+  const grid = document.getElementById("coeffGrid");
+  if(!grid) return;
+  grid.innerHTML = "";
+  for(let i=1;i<=18;i++){
+    const wrap = document.createElement("div");
+    wrap.className = "form-row";
+    wrap.innerHTML = `
+      <label>${i} 月</label>
+      <input type="number" step="0.01" data-coeff-index="${i-1}" value="${Number(state.globals.monthlyCoeffs[i-1]).toFixed(2)}"/>
+    `;
+    grid.appendChild(wrap);
+  }
+  grid.querySelectorAll("input[data-coeff-index]").forEach(inp => {
+    inp.addEventListener("input", e=>{
+      const idx = Number(e.target.dataset.coeffIndex);
+      const v = Number(e.target.value);
+      state.globals.monthlyCoeffs[idx] = Number.isFinite(v) ? v : 1.00;
+      render();
+    });
+  });
+  const resetBtn = document.getElementById("btnCoeffReset");
+  if(resetBtn){
+    resetBtn.onclick = ()=>{
+      state.globals.monthlyCoeffs = Array.from({length:18}, ()=>1.00);
+      buildCoeffGrid();
+      render();
+    };
+  }
+}
+
+
 document.addEventListener("DOMContentLoaded", ()=>{
   seed();
+  buildCoeffGrid();
   render();
   $("#newDate").value = new Date().toISOString().slice(0,10);
 });
