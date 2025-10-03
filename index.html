@@ -1,7 +1,308 @@
-<!DOCTYPE html><html><head><meta charset="utf-8">
-<title>SINYA USEDPC Dashboard — v8.5 Pro / 2025 Q4</title>
-<link rel="stylesheet" href="style.css"></head>
-<body><header class="app-header">
-    <h1>SINYA USEDPC Dashboard — v8.5 Pro / 2025 Q4 <span class="tag">custom</span></h1>
-</header><main class="container"><section class="card"><h2>占位</h2></section></main>
-<script src="script.js"></script></body></html>
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>SINYA USEDPC Dashboard — v8.5 Pro</title>
+  <link rel="stylesheet" href="style.css"/>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+</head>
+<body>
+  <header class="app-header">
+    <h1>SINYA USEDPC Dashboard — v8.4 Pro / 2025 Q4 <span class="tag">custom</span></h1>
+    <div class="header-actions">
+      <button id="btnSaveScenario" class="btn primary">儲存情境</button>
+      <button id="btnLoadScenario" class="btn">載入情境</button>
+      <button id="btnReset" class="btn danger">重置</button>
+      <label class="switch">
+        <input type="checkbox" id="toggleDiagnostics"/>
+        <span class="slider"></span>
+      </label>
+      <span class="switch-label">診斷模式</span>
+    </div>
+  </header>
+
+  <main class="container">
+    <section class="card">
+      <h2>全域參數</h2>
+      <div class="grid two">
+        <div class="form-row">
+          <label>四捨五入單位</label>
+          <input id="roundUnit" type="number" step="1" value="10"/>
+        </div>
+        <div class="form-row">
+          <label>四捨五入方式</label>
+          <select id="roundMode">
+            <option value="nearest">四捨五入</option>
+            <option value="ceil">無條件進位</option>
+            <option value="floor">無條件捨去</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label>尾數優化</label>
+          <select id="tailMode">
+            <option value="none">不調整</option>
+            <option value="9">尾數9</option>
+            <option value="99">尾數99</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label>預設市價調整％（例：0.05）</label>
+          <input id="defaultMarketAdj" type="number" step="0.01" value="0.05"/>
+        </div>
+        <div class="form-row">
+          <label>最低毛利率底線（例：0.10）</label>
+          <input id="minMarginFloor" type="number" step="0.01" value="0.10"/>
+        </div>
+        <div class="form-row">
+          <label>不得低於市場價 X％（例：-0.05 代表可低 5%）</label>
+          <input id="notBelowMarketPct" type="number" step="0.01" value="-0.05"/>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <label>逾期降價階梯（格式：天數/百分比，以逗號分隔）</label>
+        <input id="ladderInput" type="text" value="30/-0.05,60/-0.10,90/-0.15"/>
+        <small>例如 30/-0.05 表示庫存 ≥30 天降價 5%。系統會套用「符合的最大門檻」。</small>
+      </div>
+
+      <div class="generator">
+        <h3>按月自動生成階梯</h3>
+        <div class="grid three">
+          <div class="form-row">
+            <label>起始月</label>
+            <input id="genStartMonth" type="number" min="1" max="36" value="3"/>
+          </div>
+          <div class="form-row">
+            <label>結束月</label>
+            <input id="genEndMonth" type="number" min="1" max="36" value="12"/>
+          </div>
+          <div class="form-row">
+            <label>每月調整％（負數=降價，例如 -0.05）</label>
+            <input id="genPerMonthPct" type="number" step="0.01" value="-0.05"/>
+          </div>
+        </div>
+        <div class="form-row align-end">
+          <button id="btnGenLadder" class="btn success">生成 → 套用到階梯</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>每月回收係數（1–18 月）</h2>
+      <div class="form-row"><label class="checkbox"><input type="checkbox" id="cumulativeMode"/> 啟用「每月以累積降幅」模式（當月係數 × 前月累乘）</label></div>
+      <p class="muted">說明：依「回收日起算的整月數」取對應係數進行乘算。當勾選累積模式時，會用 1→當月的係數累乘。</p>
+      <div class="grid three" id="coeffGrid"></div>
+      <div class="grid two" style="margin-top:8px">
+        <div class="form-row">
+          <label>快速貼上 1–18 月係數（以逗號或空白分隔）</label>
+          <textarea id="coeffPaste" rows="3" placeholder="例如：1 1 0.99 0.98 0.97 0.96 0.95 0.94 0.93 0.92 0.91 0.90 0.89 0.88 0.87 0.86 0.85 0.84"></textarea>
+        </div>
+        <div class="form-row align-end">
+          <button id="btnCoeffPasteGlobal" class="btn primary">套用到全域</button>
+          <button id="btnCoeffPasteItems" class="btn">套用到目前篩選的單品（覆寫）</button>
+          <button id="btnCoeffReset" class="btn ghost">全部重置為 1.00</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>篩選 / 搜尋</h2>
+      <div class="grid three">
+        <div class="form-row">
+          <label>分類</label>
+          <select id="filterCategory">
+            <option value="">全部</option>
+            <option>NB</option>
+            <option>DT</option>
+            <option>MON</option>
+            <option>DIY</option>
+            <option>OTH</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label>關鍵字（名稱/備註）</label>
+          <input id="searchKeyword" type="text" placeholder="輸入關鍵字…"/>
+        </div>
+        <div class="form-row align-end">
+          <button id="btnApplyFilter" class="btn">套用篩選</button>
+          <button id="btnClearFilter" class="btn ghost">清除</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>批次設定（僅作用於目前篩選結果）</h2>
+      <div class="grid three">
+        <div class="form-row">
+          <label>批次套用毛利率（空白略過）</label>
+          <input id="batchMargin" type="number" step="0.01" placeholder="例如 0.20"/>
+        </div>
+        <div class="form-row">
+          <label>批次套用市價調整％（空白略過）</label>
+          <input id="batchMarketAdj" type="number" step="0.01" placeholder="例如 0.05"/>
+        </div>
+        <div class="form-row align-end">
+          <button id="btnBatchApply" class="btn primary">套用到篩選結果</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>新增回收品</h2>
+      <div class="grid three">
+        <div class="form-row">
+          <label>名稱</label>
+          <input id="newName" type="text" placeholder="例如：ROG NB 15”"/>
+        </div>
+        <div class="form-row">
+          <label>分類</label>
+          <select id="newCategory">
+            <option>NB</option>
+            <option>DT</option>
+            <option>MON</option>
+            <option>DIY</option>
+            <option>OTH</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label>回收日</label>
+          <input id="newDate" type="date"/>
+        </div>
+        <div class="form-row">
+          <label>成本</label>
+          <input id="newCost" type="number" step="1"/>
+        </div>
+        <div class="form-row">
+          <label>毛利率</label>
+          <input id="newMargin" type="number" step="0.01" placeholder="例如 0.20"/>
+        </div>
+        <div class="form-row">
+          <label>市場價（可空）</label>
+          <input id="newMarket" type="number" step="1" placeholder="可空"/>
+        </div>
+        <div class="form-row">
+          <label>單品市價調整％（可空）</label>
+          <input id="newMarketAdj" type="number" step="0.01" placeholder="可空"/>
+        </div>
+        <div class="form-row checkbox-row">
+          <label class="checkbox">
+            <input id="newRepair" type="checkbox"/> 有維修紀錄
+          </label>
+        </div>
+        <div class="form-row" id="repairNoteRow" style="display:none;">
+          <label>維修備註</label>
+          <input id="newRepairNote" type="text" placeholder="維修內容、零件…"/>
+        </div>
+        <div class="form-row span-full align-end">
+          <button id="btnAdd" class="btn success">加入清單</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>回收清單</h2>
+      <div class="table-wrap">
+        <table id="itemsTable">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>名稱</th>
+              <th>分類</th>
+              <th>回收日</th>
+              <th>庫存天數</th>
+              <th>成本</th>
+              <th>毛利率</th>
+              <th>市場價</th>
+              <th>市價調整％</th>
+              <th>最終售價</th>
+              <th>毛利額</th>
+              <th>維修</th>
+              <th>備註</th>
+              <th>月係數覆寫（1–18，用逗號/空白）</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+          <tfoot>
+            <tr>
+              <td colspan="9" class="right">二手總價：</td>
+              <td id="sumPrice" class="mono">0</td>
+              <td id="sumProfit" class="mono">0</td>
+              <td colspan="3"></td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>係數／階梯 模板管理（儲存 / 載入 / 套用）</h2>
+      <p class="muted">將目前「全域係數（含累積模式）＋逾期階梯」存成一個模板；或載入模板並套用到全域、或批次覆寫目前篩選的單品。</p>
+      <div class="grid two">
+        <div class="form-row">
+          <label>模板名稱</label>
+          <input id="tplName" type="text" placeholder="例如：標準12月遞減"/>
+        </div>
+        <div class="form-row align-end">
+          <button id="btnTplSave" class="btn success">儲存為模板</button>
+          <button id="btnTplExport" class="btn">匯出模板 JSON</button>
+          <label class="file"><input id="tplFileImport" type="file" accept=".json"/><span>選擇模板 JSON 以匯入</span></label>
+          <button id="btnTplFileImport" class="btn primary">匯入 JSON</button>
+        </div>
+      </div>
+      <div class="grid two">
+        <div class="form-row">
+          <label>已儲存模板</label>
+          <select id="tplList"></select>
+        </div>
+        <div class="form-row align-end">
+          <button id="btnTplApplyGlobal" class="btn primary">套用係數到全域</button>
+          <button id="btnTplApplyItems" class="btn">套用係數到目前篩選單品（覆寫）</button>
+          <button id="btnTplApplyLadder" class="btn">套用階梯到全域</button>
+          <button id="btnTplDelete" class="btn danger">刪除模板</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>匯入 / 匯出</h2>
+      <div class="grid three">
+        <div class="form-row">
+          <button id="btnExportJSON" class="btn">匯出 JSON</button>
+          <button id="btnExportCSV" class="btn">匯出 CSV</button>
+          <button id="btnExportXLSX" class="btn">匯出 XLSX</button>
+        </div>
+        <div class="form-row">
+          <label class="file">
+            <input id="fileImport" type="file" accept=".json,.csv,.xlsx"/>
+            <span>選擇檔案以匯入（JSON / CSV / XLSX）</span>
+          </label>
+        </div>
+        <div class="form-row align-end">
+          <button id="btnImport" class="btn primary">開始匯入</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="card subtle">
+      <h3>v8.5 Pro 變更摘要</h3>
+      <ul>
+        <li>新增：<b>市價上限</b>，最終售價不可高於「市價 × (1 + 市價調整％)」。</li>
+        <li>診斷模式新增「市價上限」與「上限/下限衝突」提示。</li>
+        <li>延續：正確計算順序、尾數護欄、單品月係數覆寫、快速貼上、按月自動生成階梯、累積降幅、模板管理、批次僅篩選、重新計算等。</li>
+      </ul>
+    </section>
+  </main>
+
+  <footer class="app-footer">
+    <span>© 2025 SINYA (demo). Built for GitHub Pages deployment.</span>
+    <a href="README.md">README</a>
+  </footer>
+
+  <script src="script.js"></script>
+</body>
+</html>
