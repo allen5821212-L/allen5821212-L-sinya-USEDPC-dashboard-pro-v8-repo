@@ -37,6 +37,7 @@ const state = {
     notBelowMarketPct: -0.05,
     ladder: [ {days:30, adj:-0.05}, {days:60, adj:-0.10}, {days:90, adj:-0.15} ],
     monthlyCoeffs: Array.from({length:18}, ()=>1.00),
+    cumulativeMode: false,
   }
 };
 
@@ -133,7 +134,16 @@ function computePrice(item, globals, today = new Date()){
   // 5) monthly recovery coefficient (by month index 1..18)
   const monthIndex = Math.min(18, Math.max(1, Math.floor(daysInStock/30)+1));
   const sourceCoeffs = (Array.isArray(item.monthlyCoeffs) && item.monthlyCoeffs.length)? item.monthlyCoeffs : globals.monthlyCoeffs;
-  const coeff = Array.isArray(sourceCoeffs)? Number(sourceCoeffs[monthIndex-1]||1) : 1;
+  let coeff = 1;
+  if(Array.isArray(sourceCoeffs)){
+    if(globals.cumulativeMode){
+      // cumulative product from month 1..current monthIndex
+      const end = Math.min(monthIndex, sourceCoeffs.length);
+      for(let i=0;i<end;i++) coeff *= Number(sourceCoeffs[i]||1);
+    }else{
+      coeff = Number(sourceCoeffs[monthIndex-1]||1);
+    }
+  }
   price = price * coeff;
   steps.afterMonthlyCoeff = price;
 
@@ -315,6 +325,7 @@ function pullGlobalsFromUI(){
   state.globals.minMarginFloor   = Number($("#minMarginFloor").value)||0;
   state.globals.notBelowMarketPct= Number($("#notBelowMarketPct").value)||0;
   state.globals.ladder = parseLadder($("#ladderInput").value);
+  state.globals.cumulativeMode = $("#cumulativeMode").checked;
 }
 ["#roundUnit","#roundMode","#tailMode","#defaultMarketAdj","#minMarginFloor","#notBelowMarketPct","#ladderInput"]
   .forEach(sel => $(sel).addEventListener("input", ()=>{ pullGlobalsFromUI(); render(); }));
@@ -324,12 +335,256 @@ $("#btnApplyFilter").addEventListener("click", ()=>{
   state.filter.category = $("#filterCategory").value;
   state.filter.keyword = $("#searchKeyword").value;
   render();
+// ---- Template Manager (Coefficients + Ladder + Cumulative flag) ----
+const TPL_KEY = "sinya_usedpc_templates_v8_4";
+function loadTemplates(){
+  try{ return JSON.parse(localStorage.getItem(TPL_KEY) || "[]"); }catch(_){ return []; }
+}
+function saveTemplates(list){
+  localStorage.setItem(TPL_KEY, JSON.stringify(list));
+}
+function refreshTplList(){
+  const sel = document.getElementById("tplList");
+  if(!sel) return;
+  const list = loadTemplates();
+  sel.innerHTML = list.map((t,i)=>`<option value="${i}">${escapeHtml(t.name)}</option>`).join("");
+}
+function getTplName(){
+  const n = (document.getElementById("tplName")?.value || "").trim();
+  return n;
+}
+function getCurrentTplData(){
+  return {
+    name: getTplName() || `模板-${new Date().toISOString().slice(0,19).replace("T"," ")}`,
+    coeffs: Array.isArray(state.globals.monthlyCoeffs)? state.globals.monthlyCoeffs.slice(0,18) : Array.from({length:18}, ()=>1),
+    cumulative: !!state.globals.cumulativeMode,
+    ladderStr: document.getElementById("ladderInput").value || ""
+  };
+}
+const btnTplSave = document.getElementById("btnTplSave");
+if(btnTplSave){
+  btnTplSave.onclick = ()=>{
+    const t = getCurrentTplData();
+    const list = loadTemplates();
+    // If same name exists, overwrite
+    const idx = list.findIndex(x => x.name === t.name);
+    if(idx>=0) list[idx] = t; else list.push(t);
+    saveTemplates(list);
+    refreshTplList();
+    alert("模板已儲存");
+  };
+}
+const btnTplDelete = document.getElementById("btnTplDelete");
+if(btnTplDelete){
+  btnTplDelete.onclick = ()=>{
+    const sel = document.getElementById("tplList");
+    if(!sel || sel.selectedIndex<0){ alert("請先選擇模板"); return; }
+    const list = loadTemplates();
+    list.splice(sel.selectedIndex,1);
+    saveTemplates(list);
+    refreshTplList();
+    alert("模板已刪除");
+  };
+}
+const btnTplApplyGlobal = document.getElementById("btnTplApplyGlobal");
+if(btnTplApplyGlobal){
+  btnTplApplyGlobal.onclick = ()=>{
+    const sel = document.getElementById("tplList");
+    if(!sel || sel.selectedIndex<0){ alert("請先選擇模板"); return; }
+    const t = loadTemplates()[sel.selectedIndex];
+    state.globals.monthlyCoeffs = (t.coeffs||[]).slice(0,18);
+    state.globals.cumulativeMode = !!t.cumulative;
+    document.getElementById("ladderInput").value = t.ladderStr || document.getElementById("ladderInput").value;
+    pullGlobalsFromUI();
+    buildCoeffGrid();
+    render();
+    alert("已套用模板的係數（全域）與累積模式設定");
+  };
+}
+const btnTplApplyItems = document.getElementById("btnTplApplyItems");
+if(btnTplApplyItems){
+  btnTplApplyItems.onclick = ()=>{
+    const sel = document.getElementById("tplList");
+    if(!sel || sel.selectedIndex<0){ alert("請先選擇模板"); return; }
+    const t = loadTemplates()[sel.selectedIndex];
+    const arr = (t.coeffs||[]).slice(0,18);
+    const filtered = state.items.map((it, idx) => ({it, idx})).filter(x => filterItem(x.it));
+    for(const {idx} of filtered) state.items[idx].monthlyCoeffs = arr.slice();
+    render();
+    alert("已將模板係數覆寫到目前篩選的單品");
+  };
+}
+const btnTplApplyLadder = document.getElementById("btnTplApplyLadder");
+if(btnTplApplyLadder){
+  btnTplApplyLadder.onclick = ()=>{
+    const sel = document.getElementById("tplList");
+    if(!sel || sel.selectedIndex<0){ alert("請先選擇模板"); return; }
+    const t = loadTemplates()[sel.selectedIndex];
+    document.getElementById("ladderInput").value = t.ladderStr || "";
+    pullGlobalsFromUI();
+    render();
+    alert("已套用模板的逾期階梯");
+  };
+}
+const btnTplExport = document.getElementById("btnTplExport");
+if(btnTplExport){
+  btnTplExport.onclick = ()=>{
+    const list = loadTemplates();
+    const blob = new Blob([JSON.stringify(list, null, 2)], {type:"application/json"});
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download="usedpc_templates_v8_4.json"; a.click();
+  };
+}
+let tplImportedFile = null;
+const tplFileInput = document.getElementById("tplFileImport");
+if(tplFileInput){
+  tplFileInput.addEventListener("change", e=>{ tplImportedFile = e.target.files[0] || null; });
+}
+const btnTplFileImport = document.getElementById("btnTplFileImport");
+if(btnTplFileImport){
+  btnTplFileImport.onclick = async ()=>{
+    if(!tplImportedFile){ alert("請先選擇模板 JSON 檔"); return; }
+    try{
+      const txt = await tplImportedFile.text();
+      const arr = JSON.parse(txt);
+      if(!Array.isArray(arr)) throw new Error("格式錯誤：非陣列");
+      saveTemplates(arr);
+      refreshTplList();
+      alert("模板 JSON 已匯入");
+    }catch(e){ alert("匯入失敗：" + e.message); }
+  };
+}
+function initTemplateManager(){
+  refreshTplList();
+}
+
 });
 $("#btnClearFilter").addEventListener("click", ()=>{
   $("#filterCategory").value = "";
   $("#searchKeyword").value = "";
   state.filter = {category:"", keyword:""};
   render();
+// ---- Template Manager (Coefficients + Ladder + Cumulative flag) ----
+const TPL_KEY = "sinya_usedpc_templates_v8_4";
+function loadTemplates(){
+  try{ return JSON.parse(localStorage.getItem(TPL_KEY) || "[]"); }catch(_){ return []; }
+}
+function saveTemplates(list){
+  localStorage.setItem(TPL_KEY, JSON.stringify(list));
+}
+function refreshTplList(){
+  const sel = document.getElementById("tplList");
+  if(!sel) return;
+  const list = loadTemplates();
+  sel.innerHTML = list.map((t,i)=>`<option value="${i}">${escapeHtml(t.name)}</option>`).join("");
+}
+function getTplName(){
+  const n = (document.getElementById("tplName")?.value || "").trim();
+  return n;
+}
+function getCurrentTplData(){
+  return {
+    name: getTplName() || `模板-${new Date().toISOString().slice(0,19).replace("T"," ")}`,
+    coeffs: Array.isArray(state.globals.monthlyCoeffs)? state.globals.monthlyCoeffs.slice(0,18) : Array.from({length:18}, ()=>1),
+    cumulative: !!state.globals.cumulativeMode,
+    ladderStr: document.getElementById("ladderInput").value || ""
+  };
+}
+const btnTplSave = document.getElementById("btnTplSave");
+if(btnTplSave){
+  btnTplSave.onclick = ()=>{
+    const t = getCurrentTplData();
+    const list = loadTemplates();
+    // If same name exists, overwrite
+    const idx = list.findIndex(x => x.name === t.name);
+    if(idx>=0) list[idx] = t; else list.push(t);
+    saveTemplates(list);
+    refreshTplList();
+    alert("模板已儲存");
+  };
+}
+const btnTplDelete = document.getElementById("btnTplDelete");
+if(btnTplDelete){
+  btnTplDelete.onclick = ()=>{
+    const sel = document.getElementById("tplList");
+    if(!sel || sel.selectedIndex<0){ alert("請先選擇模板"); return; }
+    const list = loadTemplates();
+    list.splice(sel.selectedIndex,1);
+    saveTemplates(list);
+    refreshTplList();
+    alert("模板已刪除");
+  };
+}
+const btnTplApplyGlobal = document.getElementById("btnTplApplyGlobal");
+if(btnTplApplyGlobal){
+  btnTplApplyGlobal.onclick = ()=>{
+    const sel = document.getElementById("tplList");
+    if(!sel || sel.selectedIndex<0){ alert("請先選擇模板"); return; }
+    const t = loadTemplates()[sel.selectedIndex];
+    state.globals.monthlyCoeffs = (t.coeffs||[]).slice(0,18);
+    state.globals.cumulativeMode = !!t.cumulative;
+    document.getElementById("ladderInput").value = t.ladderStr || document.getElementById("ladderInput").value;
+    pullGlobalsFromUI();
+    buildCoeffGrid();
+    render();
+    alert("已套用模板的係數（全域）與累積模式設定");
+  };
+}
+const btnTplApplyItems = document.getElementById("btnTplApplyItems");
+if(btnTplApplyItems){
+  btnTplApplyItems.onclick = ()=>{
+    const sel = document.getElementById("tplList");
+    if(!sel || sel.selectedIndex<0){ alert("請先選擇模板"); return; }
+    const t = loadTemplates()[sel.selectedIndex];
+    const arr = (t.coeffs||[]).slice(0,18);
+    const filtered = state.items.map((it, idx) => ({it, idx})).filter(x => filterItem(x.it));
+    for(const {idx} of filtered) state.items[idx].monthlyCoeffs = arr.slice();
+    render();
+    alert("已將模板係數覆寫到目前篩選的單品");
+  };
+}
+const btnTplApplyLadder = document.getElementById("btnTplApplyLadder");
+if(btnTplApplyLadder){
+  btnTplApplyLadder.onclick = ()=>{
+    const sel = document.getElementById("tplList");
+    if(!sel || sel.selectedIndex<0){ alert("請先選擇模板"); return; }
+    const t = loadTemplates()[sel.selectedIndex];
+    document.getElementById("ladderInput").value = t.ladderStr || "";
+    pullGlobalsFromUI();
+    render();
+    alert("已套用模板的逾期階梯");
+  };
+}
+const btnTplExport = document.getElementById("btnTplExport");
+if(btnTplExport){
+  btnTplExport.onclick = ()=>{
+    const list = loadTemplates();
+    const blob = new Blob([JSON.stringify(list, null, 2)], {type:"application/json"});
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download="usedpc_templates_v8_4.json"; a.click();
+  };
+}
+let tplImportedFile = null;
+const tplFileInput = document.getElementById("tplFileImport");
+if(tplFileInput){
+  tplFileInput.addEventListener("change", e=>{ tplImportedFile = e.target.files[0] || null; });
+}
+const btnTplFileImport = document.getElementById("btnTplFileImport");
+if(btnTplFileImport){
+  btnTplFileImport.onclick = async ()=>{
+    if(!tplImportedFile){ alert("請先選擇模板 JSON 檔"); return; }
+    try{
+      const txt = await tplImportedFile.text();
+      const arr = JSON.parse(txt);
+      if(!Array.isArray(arr)) throw new Error("格式錯誤：非陣列");
+      saveTemplates(arr);
+      refreshTplList();
+      alert("模板 JSON 已匯入");
+    }catch(e){ alert("匯入失敗：" + e.message); }
+  };
+}
+function initTemplateManager(){
+  refreshTplList();
+}
+
 });
 
 // Batch apply
@@ -342,6 +597,128 @@ $("#btnBatchApply").addEventListener("click", ()=>{
     if(a!=="") state.items[idx].marketAdj = Number(a);
   }
   render();
+// ---- Template Manager (Coefficients + Ladder + Cumulative flag) ----
+const TPL_KEY = "sinya_usedpc_templates_v8_4";
+function loadTemplates(){
+  try{ return JSON.parse(localStorage.getItem(TPL_KEY) || "[]"); }catch(_){ return []; }
+}
+function saveTemplates(list){
+  localStorage.setItem(TPL_KEY, JSON.stringify(list));
+}
+function refreshTplList(){
+  const sel = document.getElementById("tplList");
+  if(!sel) return;
+  const list = loadTemplates();
+  sel.innerHTML = list.map((t,i)=>`<option value="${i}">${escapeHtml(t.name)}</option>`).join("");
+}
+function getTplName(){
+  const n = (document.getElementById("tplName")?.value || "").trim();
+  return n;
+}
+function getCurrentTplData(){
+  return {
+    name: getTplName() || `模板-${new Date().toISOString().slice(0,19).replace("T"," ")}`,
+    coeffs: Array.isArray(state.globals.monthlyCoeffs)? state.globals.monthlyCoeffs.slice(0,18) : Array.from({length:18}, ()=>1),
+    cumulative: !!state.globals.cumulativeMode,
+    ladderStr: document.getElementById("ladderInput").value || ""
+  };
+}
+const btnTplSave = document.getElementById("btnTplSave");
+if(btnTplSave){
+  btnTplSave.onclick = ()=>{
+    const t = getCurrentTplData();
+    const list = loadTemplates();
+    // If same name exists, overwrite
+    const idx = list.findIndex(x => x.name === t.name);
+    if(idx>=0) list[idx] = t; else list.push(t);
+    saveTemplates(list);
+    refreshTplList();
+    alert("模板已儲存");
+  };
+}
+const btnTplDelete = document.getElementById("btnTplDelete");
+if(btnTplDelete){
+  btnTplDelete.onclick = ()=>{
+    const sel = document.getElementById("tplList");
+    if(!sel || sel.selectedIndex<0){ alert("請先選擇模板"); return; }
+    const list = loadTemplates();
+    list.splice(sel.selectedIndex,1);
+    saveTemplates(list);
+    refreshTplList();
+    alert("模板已刪除");
+  };
+}
+const btnTplApplyGlobal = document.getElementById("btnTplApplyGlobal");
+if(btnTplApplyGlobal){
+  btnTplApplyGlobal.onclick = ()=>{
+    const sel = document.getElementById("tplList");
+    if(!sel || sel.selectedIndex<0){ alert("請先選擇模板"); return; }
+    const t = loadTemplates()[sel.selectedIndex];
+    state.globals.monthlyCoeffs = (t.coeffs||[]).slice(0,18);
+    state.globals.cumulativeMode = !!t.cumulative;
+    document.getElementById("ladderInput").value = t.ladderStr || document.getElementById("ladderInput").value;
+    pullGlobalsFromUI();
+    buildCoeffGrid();
+    render();
+    alert("已套用模板的係數（全域）與累積模式設定");
+  };
+}
+const btnTplApplyItems = document.getElementById("btnTplApplyItems");
+if(btnTplApplyItems){
+  btnTplApplyItems.onclick = ()=>{
+    const sel = document.getElementById("tplList");
+    if(!sel || sel.selectedIndex<0){ alert("請先選擇模板"); return; }
+    const t = loadTemplates()[sel.selectedIndex];
+    const arr = (t.coeffs||[]).slice(0,18);
+    const filtered = state.items.map((it, idx) => ({it, idx})).filter(x => filterItem(x.it));
+    for(const {idx} of filtered) state.items[idx].monthlyCoeffs = arr.slice();
+    render();
+    alert("已將模板係數覆寫到目前篩選的單品");
+  };
+}
+const btnTplApplyLadder = document.getElementById("btnTplApplyLadder");
+if(btnTplApplyLadder){
+  btnTplApplyLadder.onclick = ()=>{
+    const sel = document.getElementById("tplList");
+    if(!sel || sel.selectedIndex<0){ alert("請先選擇模板"); return; }
+    const t = loadTemplates()[sel.selectedIndex];
+    document.getElementById("ladderInput").value = t.ladderStr || "";
+    pullGlobalsFromUI();
+    render();
+    alert("已套用模板的逾期階梯");
+  };
+}
+const btnTplExport = document.getElementById("btnTplExport");
+if(btnTplExport){
+  btnTplExport.onclick = ()=>{
+    const list = loadTemplates();
+    const blob = new Blob([JSON.stringify(list, null, 2)], {type:"application/json"});
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download="usedpc_templates_v8_4.json"; a.click();
+  };
+}
+let tplImportedFile = null;
+const tplFileInput = document.getElementById("tplFileImport");
+if(tplFileInput){
+  tplFileInput.addEventListener("change", e=>{ tplImportedFile = e.target.files[0] || null; });
+}
+const btnTplFileImport = document.getElementById("btnTplFileImport");
+if(btnTplFileImport){
+  btnTplFileImport.onclick = async ()=>{
+    if(!tplImportedFile){ alert("請先選擇模板 JSON 檔"); return; }
+    try{
+      const txt = await tplImportedFile.text();
+      const arr = JSON.parse(txt);
+      if(!Array.isArray(arr)) throw new Error("格式錯誤：非陣列");
+      saveTemplates(arr);
+      refreshTplList();
+      alert("模板 JSON 已匯入");
+    }catch(e){ alert("匯入失敗：" + e.message); }
+  };
+}
+function initTemplateManager(){
+  refreshTplList();
+}
+
 });
 
 // Add item
@@ -366,6 +743,128 @@ $("#btnAdd").addEventListener("click", ()=>{
   ["#newName","#newDate","#newCost","#newMargin","#newMarket","#newMarketAdj","#newRepairNote"].forEach(sel => $(sel).value="");
   $("#newRepair").checked=false; toggleRepairNoteRow();
   render();
+// ---- Template Manager (Coefficients + Ladder + Cumulative flag) ----
+const TPL_KEY = "sinya_usedpc_templates_v8_4";
+function loadTemplates(){
+  try{ return JSON.parse(localStorage.getItem(TPL_KEY) || "[]"); }catch(_){ return []; }
+}
+function saveTemplates(list){
+  localStorage.setItem(TPL_KEY, JSON.stringify(list));
+}
+function refreshTplList(){
+  const sel = document.getElementById("tplList");
+  if(!sel) return;
+  const list = loadTemplates();
+  sel.innerHTML = list.map((t,i)=>`<option value="${i}">${escapeHtml(t.name)}</option>`).join("");
+}
+function getTplName(){
+  const n = (document.getElementById("tplName")?.value || "").trim();
+  return n;
+}
+function getCurrentTplData(){
+  return {
+    name: getTplName() || `模板-${new Date().toISOString().slice(0,19).replace("T"," ")}`,
+    coeffs: Array.isArray(state.globals.monthlyCoeffs)? state.globals.monthlyCoeffs.slice(0,18) : Array.from({length:18}, ()=>1),
+    cumulative: !!state.globals.cumulativeMode,
+    ladderStr: document.getElementById("ladderInput").value || ""
+  };
+}
+const btnTplSave = document.getElementById("btnTplSave");
+if(btnTplSave){
+  btnTplSave.onclick = ()=>{
+    const t = getCurrentTplData();
+    const list = loadTemplates();
+    // If same name exists, overwrite
+    const idx = list.findIndex(x => x.name === t.name);
+    if(idx>=0) list[idx] = t; else list.push(t);
+    saveTemplates(list);
+    refreshTplList();
+    alert("模板已儲存");
+  };
+}
+const btnTplDelete = document.getElementById("btnTplDelete");
+if(btnTplDelete){
+  btnTplDelete.onclick = ()=>{
+    const sel = document.getElementById("tplList");
+    if(!sel || sel.selectedIndex<0){ alert("請先選擇模板"); return; }
+    const list = loadTemplates();
+    list.splice(sel.selectedIndex,1);
+    saveTemplates(list);
+    refreshTplList();
+    alert("模板已刪除");
+  };
+}
+const btnTplApplyGlobal = document.getElementById("btnTplApplyGlobal");
+if(btnTplApplyGlobal){
+  btnTplApplyGlobal.onclick = ()=>{
+    const sel = document.getElementById("tplList");
+    if(!sel || sel.selectedIndex<0){ alert("請先選擇模板"); return; }
+    const t = loadTemplates()[sel.selectedIndex];
+    state.globals.monthlyCoeffs = (t.coeffs||[]).slice(0,18);
+    state.globals.cumulativeMode = !!t.cumulative;
+    document.getElementById("ladderInput").value = t.ladderStr || document.getElementById("ladderInput").value;
+    pullGlobalsFromUI();
+    buildCoeffGrid();
+    render();
+    alert("已套用模板的係數（全域）與累積模式設定");
+  };
+}
+const btnTplApplyItems = document.getElementById("btnTplApplyItems");
+if(btnTplApplyItems){
+  btnTplApplyItems.onclick = ()=>{
+    const sel = document.getElementById("tplList");
+    if(!sel || sel.selectedIndex<0){ alert("請先選擇模板"); return; }
+    const t = loadTemplates()[sel.selectedIndex];
+    const arr = (t.coeffs||[]).slice(0,18);
+    const filtered = state.items.map((it, idx) => ({it, idx})).filter(x => filterItem(x.it));
+    for(const {idx} of filtered) state.items[idx].monthlyCoeffs = arr.slice();
+    render();
+    alert("已將模板係數覆寫到目前篩選的單品");
+  };
+}
+const btnTplApplyLadder = document.getElementById("btnTplApplyLadder");
+if(btnTplApplyLadder){
+  btnTplApplyLadder.onclick = ()=>{
+    const sel = document.getElementById("tplList");
+    if(!sel || sel.selectedIndex<0){ alert("請先選擇模板"); return; }
+    const t = loadTemplates()[sel.selectedIndex];
+    document.getElementById("ladderInput").value = t.ladderStr || "";
+    pullGlobalsFromUI();
+    render();
+    alert("已套用模板的逾期階梯");
+  };
+}
+const btnTplExport = document.getElementById("btnTplExport");
+if(btnTplExport){
+  btnTplExport.onclick = ()=>{
+    const list = loadTemplates();
+    const blob = new Blob([JSON.stringify(list, null, 2)], {type:"application/json"});
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download="usedpc_templates_v8_4.json"; a.click();
+  };
+}
+let tplImportedFile = null;
+const tplFileInput = document.getElementById("tplFileImport");
+if(tplFileInput){
+  tplFileInput.addEventListener("change", e=>{ tplImportedFile = e.target.files[0] || null; });
+}
+const btnTplFileImport = document.getElementById("btnTplFileImport");
+if(btnTplFileImport){
+  btnTplFileImport.onclick = async ()=>{
+    if(!tplImportedFile){ alert("請先選擇模板 JSON 檔"); return; }
+    try{
+      const txt = await tplImportedFile.text();
+      const arr = JSON.parse(txt);
+      if(!Array.isArray(arr)) throw new Error("格式錯誤：非陣列");
+      saveTemplates(arr);
+      refreshTplList();
+      alert("模板 JSON 已匯入");
+    }catch(e){ alert("匯入失敗：" + e.message); }
+  };
+}
+function initTemplateManager(){
+  refreshTplList();
+}
+
 });
 
 // Import/Export
@@ -375,6 +874,128 @@ $("#btnExportJSON").addEventListener("click", ()=>{
   a.href = URL.createObjectURL(blob);
   a.download = "usedpc_scenario_v8_1.json";
   a.click();
+// ---- Template Manager (Coefficients + Ladder + Cumulative flag) ----
+const TPL_KEY = "sinya_usedpc_templates_v8_4";
+function loadTemplates(){
+  try{ return JSON.parse(localStorage.getItem(TPL_KEY) || "[]"); }catch(_){ return []; }
+}
+function saveTemplates(list){
+  localStorage.setItem(TPL_KEY, JSON.stringify(list));
+}
+function refreshTplList(){
+  const sel = document.getElementById("tplList");
+  if(!sel) return;
+  const list = loadTemplates();
+  sel.innerHTML = list.map((t,i)=>`<option value="${i}">${escapeHtml(t.name)}</option>`).join("");
+}
+function getTplName(){
+  const n = (document.getElementById("tplName")?.value || "").trim();
+  return n;
+}
+function getCurrentTplData(){
+  return {
+    name: getTplName() || `模板-${new Date().toISOString().slice(0,19).replace("T"," ")}`,
+    coeffs: Array.isArray(state.globals.monthlyCoeffs)? state.globals.monthlyCoeffs.slice(0,18) : Array.from({length:18}, ()=>1),
+    cumulative: !!state.globals.cumulativeMode,
+    ladderStr: document.getElementById("ladderInput").value || ""
+  };
+}
+const btnTplSave = document.getElementById("btnTplSave");
+if(btnTplSave){
+  btnTplSave.onclick = ()=>{
+    const t = getCurrentTplData();
+    const list = loadTemplates();
+    // If same name exists, overwrite
+    const idx = list.findIndex(x => x.name === t.name);
+    if(idx>=0) list[idx] = t; else list.push(t);
+    saveTemplates(list);
+    refreshTplList();
+    alert("模板已儲存");
+  };
+}
+const btnTplDelete = document.getElementById("btnTplDelete");
+if(btnTplDelete){
+  btnTplDelete.onclick = ()=>{
+    const sel = document.getElementById("tplList");
+    if(!sel || sel.selectedIndex<0){ alert("請先選擇模板"); return; }
+    const list = loadTemplates();
+    list.splice(sel.selectedIndex,1);
+    saveTemplates(list);
+    refreshTplList();
+    alert("模板已刪除");
+  };
+}
+const btnTplApplyGlobal = document.getElementById("btnTplApplyGlobal");
+if(btnTplApplyGlobal){
+  btnTplApplyGlobal.onclick = ()=>{
+    const sel = document.getElementById("tplList");
+    if(!sel || sel.selectedIndex<0){ alert("請先選擇模板"); return; }
+    const t = loadTemplates()[sel.selectedIndex];
+    state.globals.monthlyCoeffs = (t.coeffs||[]).slice(0,18);
+    state.globals.cumulativeMode = !!t.cumulative;
+    document.getElementById("ladderInput").value = t.ladderStr || document.getElementById("ladderInput").value;
+    pullGlobalsFromUI();
+    buildCoeffGrid();
+    render();
+    alert("已套用模板的係數（全域）與累積模式設定");
+  };
+}
+const btnTplApplyItems = document.getElementById("btnTplApplyItems");
+if(btnTplApplyItems){
+  btnTplApplyItems.onclick = ()=>{
+    const sel = document.getElementById("tplList");
+    if(!sel || sel.selectedIndex<0){ alert("請先選擇模板"); return; }
+    const t = loadTemplates()[sel.selectedIndex];
+    const arr = (t.coeffs||[]).slice(0,18);
+    const filtered = state.items.map((it, idx) => ({it, idx})).filter(x => filterItem(x.it));
+    for(const {idx} of filtered) state.items[idx].monthlyCoeffs = arr.slice();
+    render();
+    alert("已將模板係數覆寫到目前篩選的單品");
+  };
+}
+const btnTplApplyLadder = document.getElementById("btnTplApplyLadder");
+if(btnTplApplyLadder){
+  btnTplApplyLadder.onclick = ()=>{
+    const sel = document.getElementById("tplList");
+    if(!sel || sel.selectedIndex<0){ alert("請先選擇模板"); return; }
+    const t = loadTemplates()[sel.selectedIndex];
+    document.getElementById("ladderInput").value = t.ladderStr || "";
+    pullGlobalsFromUI();
+    render();
+    alert("已套用模板的逾期階梯");
+  };
+}
+const btnTplExport = document.getElementById("btnTplExport");
+if(btnTplExport){
+  btnTplExport.onclick = ()=>{
+    const list = loadTemplates();
+    const blob = new Blob([JSON.stringify(list, null, 2)], {type:"application/json"});
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download="usedpc_templates_v8_4.json"; a.click();
+  };
+}
+let tplImportedFile = null;
+const tplFileInput = document.getElementById("tplFileImport");
+if(tplFileInput){
+  tplFileInput.addEventListener("change", e=>{ tplImportedFile = e.target.files[0] || null; });
+}
+const btnTplFileImport = document.getElementById("btnTplFileImport");
+if(btnTplFileImport){
+  btnTplFileImport.onclick = async ()=>{
+    if(!tplImportedFile){ alert("請先選擇模板 JSON 檔"); return; }
+    try{
+      const txt = await tplImportedFile.text();
+      const arr = JSON.parse(txt);
+      if(!Array.isArray(arr)) throw new Error("格式錯誤：非陣列");
+      saveTemplates(arr);
+      refreshTplList();
+      alert("模板 JSON 已匯入");
+    }catch(e){ alert("匯入失敗：" + e.message); }
+  };
+}
+function initTemplateManager(){
+  refreshTplList();
+}
+
 });
 $("#btnExportCSV").addEventListener("click", ()=>{
   const headers = ["name","category","date","cost","margin","market","marketAdj","repair","repairNote","monthlyCoeffs"];
@@ -390,6 +1011,128 @@ $("#btnExportCSV").addEventListener("click", ()=>{
   a.href = URL.createObjectURL(blob);
   a.download = "usedpc_items_v8_1.csv";
   a.click();
+// ---- Template Manager (Coefficients + Ladder + Cumulative flag) ----
+const TPL_KEY = "sinya_usedpc_templates_v8_4";
+function loadTemplates(){
+  try{ return JSON.parse(localStorage.getItem(TPL_KEY) || "[]"); }catch(_){ return []; }
+}
+function saveTemplates(list){
+  localStorage.setItem(TPL_KEY, JSON.stringify(list));
+}
+function refreshTplList(){
+  const sel = document.getElementById("tplList");
+  if(!sel) return;
+  const list = loadTemplates();
+  sel.innerHTML = list.map((t,i)=>`<option value="${i}">${escapeHtml(t.name)}</option>`).join("");
+}
+function getTplName(){
+  const n = (document.getElementById("tplName")?.value || "").trim();
+  return n;
+}
+function getCurrentTplData(){
+  return {
+    name: getTplName() || `模板-${new Date().toISOString().slice(0,19).replace("T"," ")}`,
+    coeffs: Array.isArray(state.globals.monthlyCoeffs)? state.globals.monthlyCoeffs.slice(0,18) : Array.from({length:18}, ()=>1),
+    cumulative: !!state.globals.cumulativeMode,
+    ladderStr: document.getElementById("ladderInput").value || ""
+  };
+}
+const btnTplSave = document.getElementById("btnTplSave");
+if(btnTplSave){
+  btnTplSave.onclick = ()=>{
+    const t = getCurrentTplData();
+    const list = loadTemplates();
+    // If same name exists, overwrite
+    const idx = list.findIndex(x => x.name === t.name);
+    if(idx>=0) list[idx] = t; else list.push(t);
+    saveTemplates(list);
+    refreshTplList();
+    alert("模板已儲存");
+  };
+}
+const btnTplDelete = document.getElementById("btnTplDelete");
+if(btnTplDelete){
+  btnTplDelete.onclick = ()=>{
+    const sel = document.getElementById("tplList");
+    if(!sel || sel.selectedIndex<0){ alert("請先選擇模板"); return; }
+    const list = loadTemplates();
+    list.splice(sel.selectedIndex,1);
+    saveTemplates(list);
+    refreshTplList();
+    alert("模板已刪除");
+  };
+}
+const btnTplApplyGlobal = document.getElementById("btnTplApplyGlobal");
+if(btnTplApplyGlobal){
+  btnTplApplyGlobal.onclick = ()=>{
+    const sel = document.getElementById("tplList");
+    if(!sel || sel.selectedIndex<0){ alert("請先選擇模板"); return; }
+    const t = loadTemplates()[sel.selectedIndex];
+    state.globals.monthlyCoeffs = (t.coeffs||[]).slice(0,18);
+    state.globals.cumulativeMode = !!t.cumulative;
+    document.getElementById("ladderInput").value = t.ladderStr || document.getElementById("ladderInput").value;
+    pullGlobalsFromUI();
+    buildCoeffGrid();
+    render();
+    alert("已套用模板的係數（全域）與累積模式設定");
+  };
+}
+const btnTplApplyItems = document.getElementById("btnTplApplyItems");
+if(btnTplApplyItems){
+  btnTplApplyItems.onclick = ()=>{
+    const sel = document.getElementById("tplList");
+    if(!sel || sel.selectedIndex<0){ alert("請先選擇模板"); return; }
+    const t = loadTemplates()[sel.selectedIndex];
+    const arr = (t.coeffs||[]).slice(0,18);
+    const filtered = state.items.map((it, idx) => ({it, idx})).filter(x => filterItem(x.it));
+    for(const {idx} of filtered) state.items[idx].monthlyCoeffs = arr.slice();
+    render();
+    alert("已將模板係數覆寫到目前篩選的單品");
+  };
+}
+const btnTplApplyLadder = document.getElementById("btnTplApplyLadder");
+if(btnTplApplyLadder){
+  btnTplApplyLadder.onclick = ()=>{
+    const sel = document.getElementById("tplList");
+    if(!sel || sel.selectedIndex<0){ alert("請先選擇模板"); return; }
+    const t = loadTemplates()[sel.selectedIndex];
+    document.getElementById("ladderInput").value = t.ladderStr || "";
+    pullGlobalsFromUI();
+    render();
+    alert("已套用模板的逾期階梯");
+  };
+}
+const btnTplExport = document.getElementById("btnTplExport");
+if(btnTplExport){
+  btnTplExport.onclick = ()=>{
+    const list = loadTemplates();
+    const blob = new Blob([JSON.stringify(list, null, 2)], {type:"application/json"});
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download="usedpc_templates_v8_4.json"; a.click();
+  };
+}
+let tplImportedFile = null;
+const tplFileInput = document.getElementById("tplFileImport");
+if(tplFileInput){
+  tplFileInput.addEventListener("change", e=>{ tplImportedFile = e.target.files[0] || null; });
+}
+const btnTplFileImport = document.getElementById("btnTplFileImport");
+if(btnTplFileImport){
+  btnTplFileImport.onclick = async ()=>{
+    if(!tplImportedFile){ alert("請先選擇模板 JSON 檔"); return; }
+    try{
+      const txt = await tplImportedFile.text();
+      const arr = JSON.parse(txt);
+      if(!Array.isArray(arr)) throw new Error("格式錯誤：非陣列");
+      saveTemplates(arr);
+      refreshTplList();
+      alert("模板 JSON 已匯入");
+    }catch(e){ alert("匯入失敗：" + e.message); }
+  };
+}
+function initTemplateManager(){
+  refreshTplList();
+}
+
 });
 $("#btnExportXLSX").addEventListener("click", ()=>{
   if(typeof XLSX==="undefined"){
@@ -405,11 +1148,255 @@ $("#btnExportXLSX").addEventListener("click", ()=>{
   a.href = URL.createObjectURL(blob);
   a.download = "usedpc_items_v8_1.xlsx";
   a.click();
+// ---- Template Manager (Coefficients + Ladder + Cumulative flag) ----
+const TPL_KEY = "sinya_usedpc_templates_v8_4";
+function loadTemplates(){
+  try{ return JSON.parse(localStorage.getItem(TPL_KEY) || "[]"); }catch(_){ return []; }
+}
+function saveTemplates(list){
+  localStorage.setItem(TPL_KEY, JSON.stringify(list));
+}
+function refreshTplList(){
+  const sel = document.getElementById("tplList");
+  if(!sel) return;
+  const list = loadTemplates();
+  sel.innerHTML = list.map((t,i)=>`<option value="${i}">${escapeHtml(t.name)}</option>`).join("");
+}
+function getTplName(){
+  const n = (document.getElementById("tplName")?.value || "").trim();
+  return n;
+}
+function getCurrentTplData(){
+  return {
+    name: getTplName() || `模板-${new Date().toISOString().slice(0,19).replace("T"," ")}`,
+    coeffs: Array.isArray(state.globals.monthlyCoeffs)? state.globals.monthlyCoeffs.slice(0,18) : Array.from({length:18}, ()=>1),
+    cumulative: !!state.globals.cumulativeMode,
+    ladderStr: document.getElementById("ladderInput").value || ""
+  };
+}
+const btnTplSave = document.getElementById("btnTplSave");
+if(btnTplSave){
+  btnTplSave.onclick = ()=>{
+    const t = getCurrentTplData();
+    const list = loadTemplates();
+    // If same name exists, overwrite
+    const idx = list.findIndex(x => x.name === t.name);
+    if(idx>=0) list[idx] = t; else list.push(t);
+    saveTemplates(list);
+    refreshTplList();
+    alert("模板已儲存");
+  };
+}
+const btnTplDelete = document.getElementById("btnTplDelete");
+if(btnTplDelete){
+  btnTplDelete.onclick = ()=>{
+    const sel = document.getElementById("tplList");
+    if(!sel || sel.selectedIndex<0){ alert("請先選擇模板"); return; }
+    const list = loadTemplates();
+    list.splice(sel.selectedIndex,1);
+    saveTemplates(list);
+    refreshTplList();
+    alert("模板已刪除");
+  };
+}
+const btnTplApplyGlobal = document.getElementById("btnTplApplyGlobal");
+if(btnTplApplyGlobal){
+  btnTplApplyGlobal.onclick = ()=>{
+    const sel = document.getElementById("tplList");
+    if(!sel || sel.selectedIndex<0){ alert("請先選擇模板"); return; }
+    const t = loadTemplates()[sel.selectedIndex];
+    state.globals.monthlyCoeffs = (t.coeffs||[]).slice(0,18);
+    state.globals.cumulativeMode = !!t.cumulative;
+    document.getElementById("ladderInput").value = t.ladderStr || document.getElementById("ladderInput").value;
+    pullGlobalsFromUI();
+    buildCoeffGrid();
+    render();
+    alert("已套用模板的係數（全域）與累積模式設定");
+  };
+}
+const btnTplApplyItems = document.getElementById("btnTplApplyItems");
+if(btnTplApplyItems){
+  btnTplApplyItems.onclick = ()=>{
+    const sel = document.getElementById("tplList");
+    if(!sel || sel.selectedIndex<0){ alert("請先選擇模板"); return; }
+    const t = loadTemplates()[sel.selectedIndex];
+    const arr = (t.coeffs||[]).slice(0,18);
+    const filtered = state.items.map((it, idx) => ({it, idx})).filter(x => filterItem(x.it));
+    for(const {idx} of filtered) state.items[idx].monthlyCoeffs = arr.slice();
+    render();
+    alert("已將模板係數覆寫到目前篩選的單品");
+  };
+}
+const btnTplApplyLadder = document.getElementById("btnTplApplyLadder");
+if(btnTplApplyLadder){
+  btnTplApplyLadder.onclick = ()=>{
+    const sel = document.getElementById("tplList");
+    if(!sel || sel.selectedIndex<0){ alert("請先選擇模板"); return; }
+    const t = loadTemplates()[sel.selectedIndex];
+    document.getElementById("ladderInput").value = t.ladderStr || "";
+    pullGlobalsFromUI();
+    render();
+    alert("已套用模板的逾期階梯");
+  };
+}
+const btnTplExport = document.getElementById("btnTplExport");
+if(btnTplExport){
+  btnTplExport.onclick = ()=>{
+    const list = loadTemplates();
+    const blob = new Blob([JSON.stringify(list, null, 2)], {type:"application/json"});
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download="usedpc_templates_v8_4.json"; a.click();
+  };
+}
+let tplImportedFile = null;
+const tplFileInput = document.getElementById("tplFileImport");
+if(tplFileInput){
+  tplFileInput.addEventListener("change", e=>{ tplImportedFile = e.target.files[0] || null; });
+}
+const btnTplFileImport = document.getElementById("btnTplFileImport");
+if(btnTplFileImport){
+  btnTplFileImport.onclick = async ()=>{
+    if(!tplImportedFile){ alert("請先選擇模板 JSON 檔"); return; }
+    try{
+      const txt = await tplImportedFile.text();
+      const arr = JSON.parse(txt);
+      if(!Array.isArray(arr)) throw new Error("格式錯誤：非陣列");
+      saveTemplates(arr);
+      refreshTplList();
+      alert("模板 JSON 已匯入");
+    }catch(e){ alert("匯入失敗：" + e.message); }
+  };
+}
+function initTemplateManager(){
+  refreshTplList();
+}
+
 });
 
 let importedFile = null;
 $("#fileImport").addEventListener("change", (e)=>{
   importedFile = e.target.files[0] || null;
+// ---- Template Manager (Coefficients + Ladder + Cumulative flag) ----
+const TPL_KEY = "sinya_usedpc_templates_v8_4";
+function loadTemplates(){
+  try{ return JSON.parse(localStorage.getItem(TPL_KEY) || "[]"); }catch(_){ return []; }
+}
+function saveTemplates(list){
+  localStorage.setItem(TPL_KEY, JSON.stringify(list));
+}
+function refreshTplList(){
+  const sel = document.getElementById("tplList");
+  if(!sel) return;
+  const list = loadTemplates();
+  sel.innerHTML = list.map((t,i)=>`<option value="${i}">${escapeHtml(t.name)}</option>`).join("");
+}
+function getTplName(){
+  const n = (document.getElementById("tplName")?.value || "").trim();
+  return n;
+}
+function getCurrentTplData(){
+  return {
+    name: getTplName() || `模板-${new Date().toISOString().slice(0,19).replace("T"," ")}`,
+    coeffs: Array.isArray(state.globals.monthlyCoeffs)? state.globals.monthlyCoeffs.slice(0,18) : Array.from({length:18}, ()=>1),
+    cumulative: !!state.globals.cumulativeMode,
+    ladderStr: document.getElementById("ladderInput").value || ""
+  };
+}
+const btnTplSave = document.getElementById("btnTplSave");
+if(btnTplSave){
+  btnTplSave.onclick = ()=>{
+    const t = getCurrentTplData();
+    const list = loadTemplates();
+    // If same name exists, overwrite
+    const idx = list.findIndex(x => x.name === t.name);
+    if(idx>=0) list[idx] = t; else list.push(t);
+    saveTemplates(list);
+    refreshTplList();
+    alert("模板已儲存");
+  };
+}
+const btnTplDelete = document.getElementById("btnTplDelete");
+if(btnTplDelete){
+  btnTplDelete.onclick = ()=>{
+    const sel = document.getElementById("tplList");
+    if(!sel || sel.selectedIndex<0){ alert("請先選擇模板"); return; }
+    const list = loadTemplates();
+    list.splice(sel.selectedIndex,1);
+    saveTemplates(list);
+    refreshTplList();
+    alert("模板已刪除");
+  };
+}
+const btnTplApplyGlobal = document.getElementById("btnTplApplyGlobal");
+if(btnTplApplyGlobal){
+  btnTplApplyGlobal.onclick = ()=>{
+    const sel = document.getElementById("tplList");
+    if(!sel || sel.selectedIndex<0){ alert("請先選擇模板"); return; }
+    const t = loadTemplates()[sel.selectedIndex];
+    state.globals.monthlyCoeffs = (t.coeffs||[]).slice(0,18);
+    state.globals.cumulativeMode = !!t.cumulative;
+    document.getElementById("ladderInput").value = t.ladderStr || document.getElementById("ladderInput").value;
+    pullGlobalsFromUI();
+    buildCoeffGrid();
+    render();
+    alert("已套用模板的係數（全域）與累積模式設定");
+  };
+}
+const btnTplApplyItems = document.getElementById("btnTplApplyItems");
+if(btnTplApplyItems){
+  btnTplApplyItems.onclick = ()=>{
+    const sel = document.getElementById("tplList");
+    if(!sel || sel.selectedIndex<0){ alert("請先選擇模板"); return; }
+    const t = loadTemplates()[sel.selectedIndex];
+    const arr = (t.coeffs||[]).slice(0,18);
+    const filtered = state.items.map((it, idx) => ({it, idx})).filter(x => filterItem(x.it));
+    for(const {idx} of filtered) state.items[idx].monthlyCoeffs = arr.slice();
+    render();
+    alert("已將模板係數覆寫到目前篩選的單品");
+  };
+}
+const btnTplApplyLadder = document.getElementById("btnTplApplyLadder");
+if(btnTplApplyLadder){
+  btnTplApplyLadder.onclick = ()=>{
+    const sel = document.getElementById("tplList");
+    if(!sel || sel.selectedIndex<0){ alert("請先選擇模板"); return; }
+    const t = loadTemplates()[sel.selectedIndex];
+    document.getElementById("ladderInput").value = t.ladderStr || "";
+    pullGlobalsFromUI();
+    render();
+    alert("已套用模板的逾期階梯");
+  };
+}
+const btnTplExport = document.getElementById("btnTplExport");
+if(btnTplExport){
+  btnTplExport.onclick = ()=>{
+    const list = loadTemplates();
+    const blob = new Blob([JSON.stringify(list, null, 2)], {type:"application/json"});
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download="usedpc_templates_v8_4.json"; a.click();
+  };
+}
+let tplImportedFile = null;
+const tplFileInput = document.getElementById("tplFileImport");
+if(tplFileInput){
+  tplFileInput.addEventListener("change", e=>{ tplImportedFile = e.target.files[0] || null; });
+}
+const btnTplFileImport = document.getElementById("btnTplFileImport");
+if(btnTplFileImport){
+  btnTplFileImport.onclick = async ()=>{
+    if(!tplImportedFile){ alert("請先選擇模板 JSON 檔"); return; }
+    try{
+      const txt = await tplImportedFile.text();
+      const arr = JSON.parse(txt);
+      if(!Array.isArray(arr)) throw new Error("格式錯誤：非陣列");
+      saveTemplates(arr);
+      refreshTplList();
+      alert("模板 JSON 已匯入");
+    }catch(e){ alert("匯入失敗：" + e.message); }
+  };
+}
+function initTemplateManager(){
+  refreshTplList();
+}
+
 });
 $("#btnImport").addEventListener("click", async ()=>{
   if(!importedFile){ alert("請先選擇檔案"); return; }
@@ -481,6 +1468,128 @@ $("#btnImport").addEventListener("click", async ()=>{
   }else{
     alert("不支援的副檔名");
   }
+// ---- Template Manager (Coefficients + Ladder + Cumulative flag) ----
+const TPL_KEY = "sinya_usedpc_templates_v8_4";
+function loadTemplates(){
+  try{ return JSON.parse(localStorage.getItem(TPL_KEY) || "[]"); }catch(_){ return []; }
+}
+function saveTemplates(list){
+  localStorage.setItem(TPL_KEY, JSON.stringify(list));
+}
+function refreshTplList(){
+  const sel = document.getElementById("tplList");
+  if(!sel) return;
+  const list = loadTemplates();
+  sel.innerHTML = list.map((t,i)=>`<option value="${i}">${escapeHtml(t.name)}</option>`).join("");
+}
+function getTplName(){
+  const n = (document.getElementById("tplName")?.value || "").trim();
+  return n;
+}
+function getCurrentTplData(){
+  return {
+    name: getTplName() || `模板-${new Date().toISOString().slice(0,19).replace("T"," ")}`,
+    coeffs: Array.isArray(state.globals.monthlyCoeffs)? state.globals.monthlyCoeffs.slice(0,18) : Array.from({length:18}, ()=>1),
+    cumulative: !!state.globals.cumulativeMode,
+    ladderStr: document.getElementById("ladderInput").value || ""
+  };
+}
+const btnTplSave = document.getElementById("btnTplSave");
+if(btnTplSave){
+  btnTplSave.onclick = ()=>{
+    const t = getCurrentTplData();
+    const list = loadTemplates();
+    // If same name exists, overwrite
+    const idx = list.findIndex(x => x.name === t.name);
+    if(idx>=0) list[idx] = t; else list.push(t);
+    saveTemplates(list);
+    refreshTplList();
+    alert("模板已儲存");
+  };
+}
+const btnTplDelete = document.getElementById("btnTplDelete");
+if(btnTplDelete){
+  btnTplDelete.onclick = ()=>{
+    const sel = document.getElementById("tplList");
+    if(!sel || sel.selectedIndex<0){ alert("請先選擇模板"); return; }
+    const list = loadTemplates();
+    list.splice(sel.selectedIndex,1);
+    saveTemplates(list);
+    refreshTplList();
+    alert("模板已刪除");
+  };
+}
+const btnTplApplyGlobal = document.getElementById("btnTplApplyGlobal");
+if(btnTplApplyGlobal){
+  btnTplApplyGlobal.onclick = ()=>{
+    const sel = document.getElementById("tplList");
+    if(!sel || sel.selectedIndex<0){ alert("請先選擇模板"); return; }
+    const t = loadTemplates()[sel.selectedIndex];
+    state.globals.monthlyCoeffs = (t.coeffs||[]).slice(0,18);
+    state.globals.cumulativeMode = !!t.cumulative;
+    document.getElementById("ladderInput").value = t.ladderStr || document.getElementById("ladderInput").value;
+    pullGlobalsFromUI();
+    buildCoeffGrid();
+    render();
+    alert("已套用模板的係數（全域）與累積模式設定");
+  };
+}
+const btnTplApplyItems = document.getElementById("btnTplApplyItems");
+if(btnTplApplyItems){
+  btnTplApplyItems.onclick = ()=>{
+    const sel = document.getElementById("tplList");
+    if(!sel || sel.selectedIndex<0){ alert("請先選擇模板"); return; }
+    const t = loadTemplates()[sel.selectedIndex];
+    const arr = (t.coeffs||[]).slice(0,18);
+    const filtered = state.items.map((it, idx) => ({it, idx})).filter(x => filterItem(x.it));
+    for(const {idx} of filtered) state.items[idx].monthlyCoeffs = arr.slice();
+    render();
+    alert("已將模板係數覆寫到目前篩選的單品");
+  };
+}
+const btnTplApplyLadder = document.getElementById("btnTplApplyLadder");
+if(btnTplApplyLadder){
+  btnTplApplyLadder.onclick = ()=>{
+    const sel = document.getElementById("tplList");
+    if(!sel || sel.selectedIndex<0){ alert("請先選擇模板"); return; }
+    const t = loadTemplates()[sel.selectedIndex];
+    document.getElementById("ladderInput").value = t.ladderStr || "";
+    pullGlobalsFromUI();
+    render();
+    alert("已套用模板的逾期階梯");
+  };
+}
+const btnTplExport = document.getElementById("btnTplExport");
+if(btnTplExport){
+  btnTplExport.onclick = ()=>{
+    const list = loadTemplates();
+    const blob = new Blob([JSON.stringify(list, null, 2)], {type:"application/json"});
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download="usedpc_templates_v8_4.json"; a.click();
+  };
+}
+let tplImportedFile = null;
+const tplFileInput = document.getElementById("tplFileImport");
+if(tplFileInput){
+  tplFileInput.addEventListener("change", e=>{ tplImportedFile = e.target.files[0] || null; });
+}
+const btnTplFileImport = document.getElementById("btnTplFileImport");
+if(btnTplFileImport){
+  btnTplFileImport.onclick = async ()=>{
+    if(!tplImportedFile){ alert("請先選擇模板 JSON 檔"); return; }
+    try{
+      const txt = await tplImportedFile.text();
+      const arr = JSON.parse(txt);
+      if(!Array.isArray(arr)) throw new Error("格式錯誤：非陣列");
+      saveTemplates(arr);
+      refreshTplList();
+      alert("模板 JSON 已匯入");
+    }catch(e){ alert("匯入失敗：" + e.message); }
+  };
+}
+function initTemplateManager(){
+  refreshTplList();
+}
+
 });
 
 function num(v, allowEmpty=false){
@@ -493,6 +1602,128 @@ function num(v, allowEmpty=false){
 $("#toggleDiagnostics").addEventListener("change", (e)=>{
   state.diagnostics = e.target.checked;
   render();
+// ---- Template Manager (Coefficients + Ladder + Cumulative flag) ----
+const TPL_KEY = "sinya_usedpc_templates_v8_4";
+function loadTemplates(){
+  try{ return JSON.parse(localStorage.getItem(TPL_KEY) || "[]"); }catch(_){ return []; }
+}
+function saveTemplates(list){
+  localStorage.setItem(TPL_KEY, JSON.stringify(list));
+}
+function refreshTplList(){
+  const sel = document.getElementById("tplList");
+  if(!sel) return;
+  const list = loadTemplates();
+  sel.innerHTML = list.map((t,i)=>`<option value="${i}">${escapeHtml(t.name)}</option>`).join("");
+}
+function getTplName(){
+  const n = (document.getElementById("tplName")?.value || "").trim();
+  return n;
+}
+function getCurrentTplData(){
+  return {
+    name: getTplName() || `模板-${new Date().toISOString().slice(0,19).replace("T"," ")}`,
+    coeffs: Array.isArray(state.globals.monthlyCoeffs)? state.globals.monthlyCoeffs.slice(0,18) : Array.from({length:18}, ()=>1),
+    cumulative: !!state.globals.cumulativeMode,
+    ladderStr: document.getElementById("ladderInput").value || ""
+  };
+}
+const btnTplSave = document.getElementById("btnTplSave");
+if(btnTplSave){
+  btnTplSave.onclick = ()=>{
+    const t = getCurrentTplData();
+    const list = loadTemplates();
+    // If same name exists, overwrite
+    const idx = list.findIndex(x => x.name === t.name);
+    if(idx>=0) list[idx] = t; else list.push(t);
+    saveTemplates(list);
+    refreshTplList();
+    alert("模板已儲存");
+  };
+}
+const btnTplDelete = document.getElementById("btnTplDelete");
+if(btnTplDelete){
+  btnTplDelete.onclick = ()=>{
+    const sel = document.getElementById("tplList");
+    if(!sel || sel.selectedIndex<0){ alert("請先選擇模板"); return; }
+    const list = loadTemplates();
+    list.splice(sel.selectedIndex,1);
+    saveTemplates(list);
+    refreshTplList();
+    alert("模板已刪除");
+  };
+}
+const btnTplApplyGlobal = document.getElementById("btnTplApplyGlobal");
+if(btnTplApplyGlobal){
+  btnTplApplyGlobal.onclick = ()=>{
+    const sel = document.getElementById("tplList");
+    if(!sel || sel.selectedIndex<0){ alert("請先選擇模板"); return; }
+    const t = loadTemplates()[sel.selectedIndex];
+    state.globals.monthlyCoeffs = (t.coeffs||[]).slice(0,18);
+    state.globals.cumulativeMode = !!t.cumulative;
+    document.getElementById("ladderInput").value = t.ladderStr || document.getElementById("ladderInput").value;
+    pullGlobalsFromUI();
+    buildCoeffGrid();
+    render();
+    alert("已套用模板的係數（全域）與累積模式設定");
+  };
+}
+const btnTplApplyItems = document.getElementById("btnTplApplyItems");
+if(btnTplApplyItems){
+  btnTplApplyItems.onclick = ()=>{
+    const sel = document.getElementById("tplList");
+    if(!sel || sel.selectedIndex<0){ alert("請先選擇模板"); return; }
+    const t = loadTemplates()[sel.selectedIndex];
+    const arr = (t.coeffs||[]).slice(0,18);
+    const filtered = state.items.map((it, idx) => ({it, idx})).filter(x => filterItem(x.it));
+    for(const {idx} of filtered) state.items[idx].monthlyCoeffs = arr.slice();
+    render();
+    alert("已將模板係數覆寫到目前篩選的單品");
+  };
+}
+const btnTplApplyLadder = document.getElementById("btnTplApplyLadder");
+if(btnTplApplyLadder){
+  btnTplApplyLadder.onclick = ()=>{
+    const sel = document.getElementById("tplList");
+    if(!sel || sel.selectedIndex<0){ alert("請先選擇模板"); return; }
+    const t = loadTemplates()[sel.selectedIndex];
+    document.getElementById("ladderInput").value = t.ladderStr || "";
+    pullGlobalsFromUI();
+    render();
+    alert("已套用模板的逾期階梯");
+  };
+}
+const btnTplExport = document.getElementById("btnTplExport");
+if(btnTplExport){
+  btnTplExport.onclick = ()=>{
+    const list = loadTemplates();
+    const blob = new Blob([JSON.stringify(list, null, 2)], {type:"application/json"});
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download="usedpc_templates_v8_4.json"; a.click();
+  };
+}
+let tplImportedFile = null;
+const tplFileInput = document.getElementById("tplFileImport");
+if(tplFileInput){
+  tplFileInput.addEventListener("change", e=>{ tplImportedFile = e.target.files[0] || null; });
+}
+const btnTplFileImport = document.getElementById("btnTplFileImport");
+if(btnTplFileImport){
+  btnTplFileImport.onclick = async ()=>{
+    if(!tplImportedFile){ alert("請先選擇模板 JSON 檔"); return; }
+    try{
+      const txt = await tplImportedFile.text();
+      const arr = JSON.parse(txt);
+      if(!Array.isArray(arr)) throw new Error("格式錯誤：非陣列");
+      saveTemplates(arr);
+      refreshTplList();
+      alert("模板 JSON 已匯入");
+    }catch(e){ alert("匯入失敗：" + e.message); }
+  };
+}
+function initTemplateManager(){
+  refreshTplList();
+}
+
 });
 
 // Scenarios
@@ -517,6 +1748,128 @@ $("#btnSaveScenario").addEventListener("click", saveScenario);
 $("#btnLoadScenario").addEventListener("click", loadScenario);
 $("#btnReset").addEventListener("click", ()=>{
   if(confirm("確定要重置所有內容？")){ seed(); render(); }
+// ---- Template Manager (Coefficients + Ladder + Cumulative flag) ----
+const TPL_KEY = "sinya_usedpc_templates_v8_4";
+function loadTemplates(){
+  try{ return JSON.parse(localStorage.getItem(TPL_KEY) || "[]"); }catch(_){ return []; }
+}
+function saveTemplates(list){
+  localStorage.setItem(TPL_KEY, JSON.stringify(list));
+}
+function refreshTplList(){
+  const sel = document.getElementById("tplList");
+  if(!sel) return;
+  const list = loadTemplates();
+  sel.innerHTML = list.map((t,i)=>`<option value="${i}">${escapeHtml(t.name)}</option>`).join("");
+}
+function getTplName(){
+  const n = (document.getElementById("tplName")?.value || "").trim();
+  return n;
+}
+function getCurrentTplData(){
+  return {
+    name: getTplName() || `模板-${new Date().toISOString().slice(0,19).replace("T"," ")}`,
+    coeffs: Array.isArray(state.globals.monthlyCoeffs)? state.globals.monthlyCoeffs.slice(0,18) : Array.from({length:18}, ()=>1),
+    cumulative: !!state.globals.cumulativeMode,
+    ladderStr: document.getElementById("ladderInput").value || ""
+  };
+}
+const btnTplSave = document.getElementById("btnTplSave");
+if(btnTplSave){
+  btnTplSave.onclick = ()=>{
+    const t = getCurrentTplData();
+    const list = loadTemplates();
+    // If same name exists, overwrite
+    const idx = list.findIndex(x => x.name === t.name);
+    if(idx>=0) list[idx] = t; else list.push(t);
+    saveTemplates(list);
+    refreshTplList();
+    alert("模板已儲存");
+  };
+}
+const btnTplDelete = document.getElementById("btnTplDelete");
+if(btnTplDelete){
+  btnTplDelete.onclick = ()=>{
+    const sel = document.getElementById("tplList");
+    if(!sel || sel.selectedIndex<0){ alert("請先選擇模板"); return; }
+    const list = loadTemplates();
+    list.splice(sel.selectedIndex,1);
+    saveTemplates(list);
+    refreshTplList();
+    alert("模板已刪除");
+  };
+}
+const btnTplApplyGlobal = document.getElementById("btnTplApplyGlobal");
+if(btnTplApplyGlobal){
+  btnTplApplyGlobal.onclick = ()=>{
+    const sel = document.getElementById("tplList");
+    if(!sel || sel.selectedIndex<0){ alert("請先選擇模板"); return; }
+    const t = loadTemplates()[sel.selectedIndex];
+    state.globals.monthlyCoeffs = (t.coeffs||[]).slice(0,18);
+    state.globals.cumulativeMode = !!t.cumulative;
+    document.getElementById("ladderInput").value = t.ladderStr || document.getElementById("ladderInput").value;
+    pullGlobalsFromUI();
+    buildCoeffGrid();
+    render();
+    alert("已套用模板的係數（全域）與累積模式設定");
+  };
+}
+const btnTplApplyItems = document.getElementById("btnTplApplyItems");
+if(btnTplApplyItems){
+  btnTplApplyItems.onclick = ()=>{
+    const sel = document.getElementById("tplList");
+    if(!sel || sel.selectedIndex<0){ alert("請先選擇模板"); return; }
+    const t = loadTemplates()[sel.selectedIndex];
+    const arr = (t.coeffs||[]).slice(0,18);
+    const filtered = state.items.map((it, idx) => ({it, idx})).filter(x => filterItem(x.it));
+    for(const {idx} of filtered) state.items[idx].monthlyCoeffs = arr.slice();
+    render();
+    alert("已將模板係數覆寫到目前篩選的單品");
+  };
+}
+const btnTplApplyLadder = document.getElementById("btnTplApplyLadder");
+if(btnTplApplyLadder){
+  btnTplApplyLadder.onclick = ()=>{
+    const sel = document.getElementById("tplList");
+    if(!sel || sel.selectedIndex<0){ alert("請先選擇模板"); return; }
+    const t = loadTemplates()[sel.selectedIndex];
+    document.getElementById("ladderInput").value = t.ladderStr || "";
+    pullGlobalsFromUI();
+    render();
+    alert("已套用模板的逾期階梯");
+  };
+}
+const btnTplExport = document.getElementById("btnTplExport");
+if(btnTplExport){
+  btnTplExport.onclick = ()=>{
+    const list = loadTemplates();
+    const blob = new Blob([JSON.stringify(list, null, 2)], {type:"application/json"});
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download="usedpc_templates_v8_4.json"; a.click();
+  };
+}
+let tplImportedFile = null;
+const tplFileInput = document.getElementById("tplFileImport");
+if(tplFileInput){
+  tplFileInput.addEventListener("change", e=>{ tplImportedFile = e.target.files[0] || null; });
+}
+const btnTplFileImport = document.getElementById("btnTplFileImport");
+if(btnTplFileImport){
+  btnTplFileImport.onclick = async ()=>{
+    if(!tplImportedFile){ alert("請先選擇模板 JSON 檔"); return; }
+    try{
+      const txt = await tplImportedFile.text();
+      const arr = JSON.parse(txt);
+      if(!Array.isArray(arr)) throw new Error("格式錯誤：非陣列");
+      saveTemplates(arr);
+      refreshTplList();
+      alert("模板 JSON 已匯入");
+    }catch(e){ alert("匯入失敗：" + e.message); }
+  };
+}
+function initTemplateManager(){
+  refreshTplList();
+}
+
 });
 
 function pushGlobalsToUI(){
@@ -527,6 +1880,7 @@ function pushGlobalsToUI(){
   $("#minMarginFloor").value = state.globals.minMarginFloor;
   $("#notBelowMarketPct").value = state.globals.notBelowMarketPct;
   $("#ladderInput").value = state.globals.ladder.map(x => `${x.days}/${x.adj}`).join(",");
+  $("#cumulativeMode").checked = !!state.globals.cumulativeMode;
   buildCoeffGrid();
 }
 function seed(){
@@ -546,6 +1900,7 @@ function seed(){
     notBelowMarketPct: -0.05,
     ladder: [ {days:30, adj:-0.05}, {days:60, adj:-0.10}, {days:90, adj:-0.15} ],
     monthlyCoeffs: Array.from({length:18}, ()=>1.00),
+    cumulativeMode: false,
   };
   pushGlobalsToUI();
   $("#toggleDiagnostics").checked = false;
@@ -591,6 +1946,7 @@ document.addEventListener("DOMContentLoaded", ()=>{
   render();
   $("#newDate").value = new Date().toISOString().slice(0,10);
   // wire paste & generator
+  initTemplateManager();
 
 // ---- Coeff paste & apply ----
 function getPasteCoeffs(){
@@ -640,6 +1996,128 @@ if(btnGen){
     render();
     alert("已按月生成階梯並套用");
   };
+}
+
+// ---- Template Manager (Coefficients + Ladder + Cumulative flag) ----
+const TPL_KEY = "sinya_usedpc_templates_v8_4";
+function loadTemplates(){
+  try{ return JSON.parse(localStorage.getItem(TPL_KEY) || "[]"); }catch(_){ return []; }
+}
+function saveTemplates(list){
+  localStorage.setItem(TPL_KEY, JSON.stringify(list));
+}
+function refreshTplList(){
+  const sel = document.getElementById("tplList");
+  if(!sel) return;
+  const list = loadTemplates();
+  sel.innerHTML = list.map((t,i)=>`<option value="${i}">${escapeHtml(t.name)}</option>`).join("");
+}
+function getTplName(){
+  const n = (document.getElementById("tplName")?.value || "").trim();
+  return n;
+}
+function getCurrentTplData(){
+  return {
+    name: getTplName() || `模板-${new Date().toISOString().slice(0,19).replace("T"," ")}`,
+    coeffs: Array.isArray(state.globals.monthlyCoeffs)? state.globals.monthlyCoeffs.slice(0,18) : Array.from({length:18}, ()=>1),
+    cumulative: !!state.globals.cumulativeMode,
+    ladderStr: document.getElementById("ladderInput").value || ""
+  };
+}
+const btnTplSave = document.getElementById("btnTplSave");
+if(btnTplSave){
+  btnTplSave.onclick = ()=>{
+    const t = getCurrentTplData();
+    const list = loadTemplates();
+    // If same name exists, overwrite
+    const idx = list.findIndex(x => x.name === t.name);
+    if(idx>=0) list[idx] = t; else list.push(t);
+    saveTemplates(list);
+    refreshTplList();
+    alert("模板已儲存");
+  };
+}
+const btnTplDelete = document.getElementById("btnTplDelete");
+if(btnTplDelete){
+  btnTplDelete.onclick = ()=>{
+    const sel = document.getElementById("tplList");
+    if(!sel || sel.selectedIndex<0){ alert("請先選擇模板"); return; }
+    const list = loadTemplates();
+    list.splice(sel.selectedIndex,1);
+    saveTemplates(list);
+    refreshTplList();
+    alert("模板已刪除");
+  };
+}
+const btnTplApplyGlobal = document.getElementById("btnTplApplyGlobal");
+if(btnTplApplyGlobal){
+  btnTplApplyGlobal.onclick = ()=>{
+    const sel = document.getElementById("tplList");
+    if(!sel || sel.selectedIndex<0){ alert("請先選擇模板"); return; }
+    const t = loadTemplates()[sel.selectedIndex];
+    state.globals.monthlyCoeffs = (t.coeffs||[]).slice(0,18);
+    state.globals.cumulativeMode = !!t.cumulative;
+    document.getElementById("ladderInput").value = t.ladderStr || document.getElementById("ladderInput").value;
+    pullGlobalsFromUI();
+    buildCoeffGrid();
+    render();
+    alert("已套用模板的係數（全域）與累積模式設定");
+  };
+}
+const btnTplApplyItems = document.getElementById("btnTplApplyItems");
+if(btnTplApplyItems){
+  btnTplApplyItems.onclick = ()=>{
+    const sel = document.getElementById("tplList");
+    if(!sel || sel.selectedIndex<0){ alert("請先選擇模板"); return; }
+    const t = loadTemplates()[sel.selectedIndex];
+    const arr = (t.coeffs||[]).slice(0,18);
+    const filtered = state.items.map((it, idx) => ({it, idx})).filter(x => filterItem(x.it));
+    for(const {idx} of filtered) state.items[idx].monthlyCoeffs = arr.slice();
+    render();
+    alert("已將模板係數覆寫到目前篩選的單品");
+  };
+}
+const btnTplApplyLadder = document.getElementById("btnTplApplyLadder");
+if(btnTplApplyLadder){
+  btnTplApplyLadder.onclick = ()=>{
+    const sel = document.getElementById("tplList");
+    if(!sel || sel.selectedIndex<0){ alert("請先選擇模板"); return; }
+    const t = loadTemplates()[sel.selectedIndex];
+    document.getElementById("ladderInput").value = t.ladderStr || "";
+    pullGlobalsFromUI();
+    render();
+    alert("已套用模板的逾期階梯");
+  };
+}
+const btnTplExport = document.getElementById("btnTplExport");
+if(btnTplExport){
+  btnTplExport.onclick = ()=>{
+    const list = loadTemplates();
+    const blob = new Blob([JSON.stringify(list, null, 2)], {type:"application/json"});
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download="usedpc_templates_v8_4.json"; a.click();
+  };
+}
+let tplImportedFile = null;
+const tplFileInput = document.getElementById("tplFileImport");
+if(tplFileInput){
+  tplFileInput.addEventListener("change", e=>{ tplImportedFile = e.target.files[0] || null; });
+}
+const btnTplFileImport = document.getElementById("btnTplFileImport");
+if(btnTplFileImport){
+  btnTplFileImport.onclick = async ()=>{
+    if(!tplImportedFile){ alert("請先選擇模板 JSON 檔"); return; }
+    try{
+      const txt = await tplImportedFile.text();
+      const arr = JSON.parse(txt);
+      if(!Array.isArray(arr)) throw new Error("格式錯誤：非陣列");
+      saveTemplates(arr);
+      refreshTplList();
+      alert("模板 JSON 已匯入");
+    }catch(e){ alert("匯入失敗：" + e.message); }
+  };
+}
+function initTemplateManager(){
+  refreshTplList();
 }
 
 });

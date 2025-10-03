@@ -95,6 +95,7 @@
     
     <section class="card">
       <h2>每月回收係數（1–18 月）</h2>
+      <div class="form-row"><label class="checkbox"><input type="checkbox" id="cumulativeMode"/> 啟用「每月以累積降幅」模式（當月係數 × 前月累乘）</label></div>
       <p class="muted">說明：依「回收日起算的整月數」取對應係數進行乘算。<br/>
       例如第 3 個月填 <code>0.95</code> 代表第 3 個月價格 ×0.95；不調整填 <code>1</code>。</p>
       <div class="grid three" id="coeffGrid">
@@ -239,6 +240,36 @@
             </tr>
           </tfoot>
         </table>
+      </div>
+    </section>
+
+    
+    <section class="card">
+      <h2>係數／階梯 模板管理（儲存 / 載入 / 套用）</h2>
+      <p class="muted">將目前「全域係數（含累積模式）＋逾期階梯」存成一個模板；或載入模板並套用到全域、或批次覆寫目前篩選的單品。</p>
+      <div class="grid two">
+        <div class="form-row">
+          <label>模板名稱</label>
+          <input id="tplName" type="text" placeholder="例如：標準12月遞減"/>
+        </div>
+        <div class="form-row align-end">
+          <button id="btnTplSave" class="btn success">儲存為模板</button>
+          <button id="btnTplExport" class="btn">匯出模板 JSON</button>
+          <label class="file"><input id="tplFileImport" type="file" accept=".json"/><span>選擇模板 JSON 以匯入</span></label>
+          <button id="btnTplFileImport" class="btn primary">匯入 JSON</button>
+        </div>
+      </div>
+      <div class="grid two">
+        <div class="form-row">
+          <label>已儲存模板</label>
+          <select id="tplList"></select>
+        </div>
+        <div class="form-row align-end">
+          <button id="btnTplApplyGlobal" class="btn primary">套用係數到全域</button>
+          <button id="btnTplApplyItems" class="btn">套用係數到目前篩選單品（覆寫）</button>
+          <button id="btnTplApplyLadder" class="btn">套用階梯到全域</button>
+          <button id="btnTplDelete" class="btn danger">刪除模板</button>
+        </div>
       </div>
     </section>
 
