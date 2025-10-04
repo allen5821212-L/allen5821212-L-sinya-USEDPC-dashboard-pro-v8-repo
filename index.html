@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>SINYA USEDPC Dashboard — 8.5 Pro / 2025 Q4</title>
+  <title>SINYA USEDPC Dashboard — 8.5 Pro / Purchase-Date Enhanced</title>
   <link rel="stylesheet" href="style.css"/>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -12,7 +12,7 @@
 </head>
 <body>
   <header class="app-header">
-    <h1>SINYA USEDPC Dashboard — 8.5 Pro / 2025 Q4 <span class="tag">calendar-month-fix</span></h1>
+    <h1>SINYA USEDPC Dashboard — 8.5 Pro / Purchase-Date Enhanced <span class="tag">calendar-month + purchase-date</span></h1>
     <div class="header-actions">
       <label class="switch">
         <input type="checkbox" id="toggleDiagnostics"/>
@@ -25,10 +25,11 @@
   <main class="container">
     <section class="card">
       <h2>全域參數</h2>
-      <div class="grid two">
+      <div class="grid three">
         <div class="form-row">
           <label>四捨五入單位</label>
-          <input id="roundUnit" type="number" step="1" value="10"/>
+          <input id="roundUnit" type="number" step="1" value="10" min="1"/>
+          <small class="muted">建議 ≥ 1；輸入非數值將回退為 1。</small>
         </div>
         <div class="form-row">
           <label>四捨五入方式</label>
@@ -52,18 +53,28 @@
         </div>
         <div class="form-row">
           <label>最低毛利率底線（例：0.10）</label>
-          <input id="minMarginFloor" type="number" step="0.01" value="0.10"/>
+          <input id="minMarginFloor" type="number" step="0.01" value="0.10" min="0"/>
         </div>
         <div class="form-row">
-          <label>不得低於市場價 X％（例：-0.05 代表可低 5%）</label>
+          <label>不得低於市場價 X％（例：-0.05 可低5%）</label>
           <input id="notBelowMarketPct" type="number" step="0.01" value="-0.05"/>
         </div>
       </div>
 
-      <div class="form-row">
-        <label>逾期降價階梯（格式：天數/百分比，以逗號分隔）</label>
-        <input id="ladderInput" type="text" value="30/-0.05,60/-0.10,90/-0.15"/>
-        <small>例如 30/-0.05 表示庫存 ≥30 天降價 5%。系統會套用「符合的最大門檻」。</small>
+      <div class="grid two">
+        <div class="form-row">
+          <label>逾期降價階梯（格式：天數/百分比，以逗號分隔）</label>
+          <input id="ladderInput" type="text" value="30/-0.05,60/-0.10,90/-0.15"/>
+          <small>例如 30/-0.05 表示庫存 ≥30 天降價 5%。系統會套用「符合的最大門檻」。</small>
+        </div>
+        <div class="form-row">
+          <label>係數月序基準</label>
+          <select id="coeffBasis">
+            <option value="purchase">依「購買日(原購)」</option>
+            <option value="recycle">依「回收日(入庫)」</option>
+          </select>
+          <small class="muted">估價情境多採「購買日」，庫存售價可採「回收日」。</small>
+        </div>
       </div>
 
       <div class="generator">
@@ -91,7 +102,7 @@
     <section class="card">
       <h2>每月回收係數（1–18 月）</h2>
       <div class="form-row"><label class="checkbox"><input type="checkbox" id="cumulativeMode"/> 啟用「每月以累積降幅」模式（當月係數 × 前月累乘）</label></div>
-      <p class="muted">說明：依「回收日起算的整月數」取對應係數進行乘算。當勾選累積模式時，會用 1→當月的係數累乘。</p>
+      <p class="muted">說明：依「<b>係數月序基準</b>」來決定第 N 月。當勾選累積模式時，會用 1→當月的係數累乘。</p>
       <div class="grid three" id="coeffGrid"></div>
       <div class="grid two" style="margin-top:8px">
         <div class="form-row">
@@ -102,48 +113,6 @@
           <button id="btnCoeffPasteGlobal" class="btn primary">套用到全域</button>
           <button id="btnCoeffPasteItems" class="btn">套用到目前篩選的單品（覆寫）</button>
           <button id="btnCoeffReset" class="btn ghost">全部重置為 1.00</button>
-        </div>
-      </div>
-    </section>
-
-    <section class="card">
-      <h2>篩選 / 搜尋</h2>
-      <div class="grid three">
-        <div class="form-row">
-          <label>分類</label>
-          <select id="filterCategory">
-            <option value="">全部</option>
-            <option>NB</option>
-            <option>DT</option>
-            <option>MON</option>
-            <option>DIY</option>
-            <option>OTH</option>
-          </select>
-        </div>
-        <div class="form-row">
-          <label>關鍵字（名稱/備註）</label>
-          <input id="searchKeyword" type="text" placeholder="輸入關鍵字…"/>
-        </div>
-        <div class="form-row align-end">
-          <button id="btnApplyFilter" class="btn">套用篩選</button>
-          <button id="btnClearFilter" class="btn ghost">清除</button>
-        </div>
-      </div>
-    </section>
-
-    <section class="card">
-      <h2>批次設定（僅作用於目前篩選結果）</h2>
-      <div class="grid three">
-        <div class="form-row">
-          <label>批次套用毛利率（空白略過）</label>
-          <input id="batchMargin" type="number" step="0.01" placeholder="例如 0.20"/>
-        </div>
-        <div class="form-row">
-          <label>批次套用市價調整％（空白略過）</label>
-          <input id="batchMarketAdj" type="number" step="0.01" placeholder="例如 0.05"/>
-        </div>
-        <div class="form-row align-end">
-          <button id="btnBatchApply" class="btn primary">套用到篩選結果</button>
         </div>
       </div>
     </section>
@@ -166,7 +135,11 @@
           </select>
         </div>
         <div class="form-row">
-          <label>回收日</label>
+          <label>購買日（原購）</label>
+          <input id="newPurchaseDate" type="date"/>
+        </div>
+        <div class="form-row">
+          <label>回收日（入庫）</label>
           <input id="newDate" type="date"/>
         </div>
         <div class="form-row">
@@ -186,9 +159,7 @@
           <input id="newMarketAdj" type="number" step="0.01" placeholder="可空"/>
         </div>
         <div class="form-row checkbox-row">
-          <label class="checkbox">
-            <input id="newRepair" type="checkbox"/> 有維修紀錄
-          </label>
+          <label class="checkbox"><input id="newRepair" type="checkbox"/> 有維修紀錄</label>
         </div>
         <div class="form-row" id="repairNoteRow" style="display:none;">
           <label>維修備註</label>
@@ -209,9 +180,11 @@
               <th>#</th>
               <th>名稱</th>
               <th>分類</th>
+              <th>購買日</th>
               <th>回收日</th>
               <th>庫存天數</th>
-              <th>第N月</th>
+              <th>第N月(購買)</th>
+              <th>第N月(回收)</th>
               <th>成本</th>
               <th>毛利率</th>
               <th>市場價</th>
@@ -227,7 +200,7 @@
           <tbody></tbody>
           <tfoot>
             <tr>
-              <td colspan="10" class="right">二手總價：</td>
+              <td colspan="12" class="right">二手總價：</td>
               <td id="sumPrice" class="mono">0</td>
               <td id="sumProfit" class="mono">0</td>
               <td colspan="4"></td>
@@ -238,11 +211,11 @@
     </section>
 
     <section class="card subtle">
-      <h3>8.5 Pro / 2025 Q4 變更摘要</h3>
+      <h3>8.5 Pro / Purchase-Date Enhanced 變更摘要</h3>
       <ul>
-        <li>修正：<b>每月回收係數採「曆法月」計算</b>（同月日未到不算新的一個月）。</li>
-        <li>延續：<b>市價上限</b>（最終 ≤ 市價 × (1 + 市價調整％)）。</li>
-        <li>診斷：顯示中間值＋<b>上限/下限衝突</b>提示，另新增顯示「第N月」。</li>
+        <li>新增欄位：<b>購買日(原購)</b>；全域設定可選擇係數月序「依購買日」或「依回收日」。</li>
+        <li>修正：每月回收係數採 <b>曆法月</b> 計算（同月日未到不算新的一個月）。</li>
+        <li>診斷：顯示購買與回收兩種月序，便於核對。</li>
       </ul>
     </section>
   </main>
