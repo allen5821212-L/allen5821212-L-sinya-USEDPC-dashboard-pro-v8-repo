@@ -1,5 +1,5 @@
 
-// v8.5 Pro core script
+// v8.5 Pro (calendar-month fix)
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
@@ -75,6 +75,20 @@ function parseCoeffRow(str){
   return arr.slice(0,18);
 }
 
+// === Calendar-month logic ===
+function monthIndexFrom(dateStr, today = new Date()) {
+  if (!dateStr) return 1;
+  const [y1, m1, d1] = dateStr.split("-").map(Number);
+  const y2 = today.getFullYear();
+  const m2 = today.getMonth() + 1;
+  const d2 = today.getDate();
+  let months = (y2 - y1) * 12 + (m2 - m1);
+  if (d2 < d1) months -= 1;
+  if (months < 1) months = 1;
+  if (months > 18) months = 18;
+  return months;
+}
+
 function computePrice(item, globals, today = new Date()){
   const steps = {};
   const cost = Number(item.cost)||0;
@@ -116,8 +130,10 @@ function computePrice(item, globals, today = new Date()){
   steps.afterLadder = price;
   steps.ladderAdj = ladderAdj;
 
-  // monthly coeff
-  const monthIndex = Math.min(18, Math.max(1, Math.floor(daysInStock/30)+1));
+  // monthly coeff (calendar month)
+  const monthIndex = monthIndexFrom(item.date, today);
+  steps.monthIndex = monthIndex;
+
   const sourceCoeffs = (Array.isArray(item.monthlyCoeffs) && item.monthlyCoeffs.length)? item.monthlyCoeffs : globals.monthlyCoeffs;
   let coeff = 1;
   if(Array.isArray(sourceCoeffs)){
@@ -155,7 +171,7 @@ function computePrice(item, globals, today = new Date()){
   price = applyTail(price, tailMode, floorConstraint);
   steps.afterTail = price;
 
-  // NEW: market ceiling
+  // market ceiling
   if(adjustedMarket!==null){
     const ceilByMarket = adjustedMarket;
     if(price > ceilByMarket){ price = ceilByMarket; }
@@ -196,6 +212,7 @@ function render(){
       <div class="badge mono">市價調整後: ${fmt(steps.adjustedMarket)}</div>
       <div class="badge mono">初步: ${fmt(steps.initialMarginPrice)}</div>
       <div class="badge mono">階梯(${steps.ladderAdj}): ${fmt(steps.afterLadder)}</div>
+      <div class="badge mono">第N月: ${steps.monthIndex}</div>
       <div class="badge mono">月係數: ${fmt(steps.afterMonthlyCoeff)}</div>
       <div class="badge mono">底線: ${fmt(steps.afterMinMargin)}</div>
       <div class="badge mono">市價下限: ${fmt(steps.afterMarketFloor)}</div>
@@ -215,6 +232,7 @@ function render(){
       </td>
       <td><input type="date" data-field="date" value="${item.date?item.date.split("T")[0]:""}"/></td>
       <td class="mono">${daysInStock(item.date)}</td>
+      <td class="mono">${steps.monthIndex}</td>
       <td contenteditable="true" class="mono" data-field="cost">${item.cost??""}</td>
       <td contenteditable="true" class="mono" data-field="margin">${item.margin??""}</td>
       <td contenteditable="true" class="mono" data-field="market">${item.market??""}</td>
@@ -482,7 +500,8 @@ function seed(){
   state.items = [
     { name:"測A", category:"NB",  date:new Date().toISOString().slice(0,10), cost:10000, margin:0.20, market:"", marketAdj:"", repair:false, repairNote:"" },
     { name:"測B", category:"NB",  date:new Date().toISOString().slice(0,10), cost:10000, margin:0.05, market:11000, marketAdj:"", repair:false, repairNote:"" },
-    { name:"測C", category:"DT",  date:new Date(Date.now()-90*86400000).toISOString().slice(0,10), cost:20000, margin:0.30, market:26000, marketAdj:0, repair:false, repairNote:"" }
+    { name:"測C", category:"DT",  date:new Date(Date.now()-90*86400000).toISOString().slice(0,10), cost:20000, margin:0.30, market:26000, marketAdj:0, repair:false, repairNote:"" },
+    { name:"你的例子：2025/08/04 → 今天 2025/10/04 應算第2月", category:"OTH", date:"2025-08-04", cost:10000, margin:0.10, market:"", marketAdj:"", repair:false, repairNote:"" }
   ];
   state.filter = {category:"", keyword:""};
   state.diagnostics = false;
@@ -506,7 +525,8 @@ document.addEventListener("DOMContentLoaded", ()=>{
   render();
   $("#newDate").value = new Date().toISOString().slice(0,10);
 
-  // paste & generator
+  $("#toggleDiagnostics").addEventListener("change", (e)=>{ state.diagnostics = e.target.checked; render(); });
+
   function getPasteCoeffs(){
     const txt = document.getElementById("coeffPaste")?.value || "";
     const arr = parseCoeffRow(txt);
@@ -544,105 +564,4 @@ document.addEventListener("DOMContentLoaded", ()=>{
       pullGlobalsFromUI(); render(); alert("已按月生成階梯並套用");
     };
   }
-
-  // Template Manager
-  const TPL_KEY = "sinya_usedpc_templates_v8_5";
-  function loadTemplates(){ try{ return JSON.parse(localStorage.getItem(TPL_KEY) || "[]"); }catch(_){ return []; } }
-  function saveTemplates(list){ localStorage.setItem(TPL_KEY, JSON.stringify(list)); }
-  function refreshTplList(){
-    const sel = document.getElementById("tplList"); if(!sel) return;
-    const list = loadTemplates(); sel.innerHTML = list.map((t,i)=>`<option value="${i}">${escapeHtml(t.name)}</option>`).join("");
-  }
-  function getTplName(){ return (document.getElementById("tplName")?.value || "").trim(); }
-  function getCurrentTplData(){
-    return {
-      name: getTplName() || `模板-${new Date().toISOString().slice(0,19).replace("T"," ")}`,
-      coeffs: Array.isArray(state.globals.monthlyCoeffs)? state.globals.monthlyCoeffs.slice(0,18) : Array.from({length:18}, ()=>1),
-      cumulative: !!state.globals.cumulativeMode,
-      ladderStr: document.getElementById("ladderInput").value || ""
-    };
-  }
-  const btnTplSave = document.getElementById("btnTplSave");
-  if(btnTplSave){
-    btnTplSave.onclick = ()=>{
-      const t = getCurrentTplData();
-      const list = loadTemplates();
-      const idx = list.findIndex(x => x.name === t.name);
-      if(idx>=0) list[idx] = t; else list.push(t);
-      saveTemplates(list); refreshTplList(); alert("模板已儲存");
-    };
-  }
-  const btnTplDelete = document.getElementById("btnTplDelete");
-  if(btnTplDelete){
-    btnTplDelete.onclick = ()=>{
-      const sel = document.getElementById("tplList");
-      if(!sel || sel.selectedIndex<0){ alert("請先選擇模板"); return; }
-      const list = loadTemplates(); list.splice(sel.selectedIndex,1);
-      saveTemplates(list); refreshTplList(); alert("模板已刪除");
-    };
-  }
-  const btnTplApplyGlobal = document.getElementById("btnTplApplyGlobal");
-  if(btnTplApplyGlobal){
-    btnTplApplyGlobal.onclick = ()=>{
-      const sel = document.getElementById("tplList");
-      if(!sel || sel.selectedIndex<0){ alert("請先選擇模板"); return; }
-      const t = loadTemplates()[sel.selectedIndex];
-      state.globals.monthlyCoeffs = (t.coeffs||[]).slice(0,18);
-      state.globals.cumulativeMode = !!t.cumulative;
-      document.getElementById("ladderInput").value = t.ladderStr || document.getElementById("ladderInput").value;
-      pullGlobalsFromUI(); buildCoeffGrid(); render();
-      alert("已套用模板的係數（全域）與累積模式設定");
-    };
-  }
-  const btnTplApplyItems = document.getElementById("btnTplApplyItems");
-  if(btnTplApplyItems){
-    btnTplApplyItems.onclick = ()=>{
-      const sel = document.getElementById("tplList");
-      if(!sel || sel.selectedIndex<0){ alert("請先選擇模板"); return; }
-      const t = loadTemplates()[sel.selectedIndex];
-      const arr = (t.coeffs||[]).slice(0,18);
-      const filtered = state.items.map((it, idx) => ({it, idx})).filter(x => filterItem(x.it));
-      for(const {idx} of filtered) state.items[idx].monthlyCoeffs = arr.slice();
-      render(); alert("已將模板係數覆寫到目前篩選的單品");
-    };
-  }
-  const btnTplApplyLadder = document.getElementById("btnTplApplyLadder");
-  if(btnTplApplyLadder){
-    btnTplApplyLadder.onclick = ()=>{
-      const sel = document.getElementById("tplList");
-      if(!sel || sel.selectedIndex<0){ alert("請先選擇模板"); return; }
-      const t = loadTemplates()[sel.selectedIndex];
-      document.getElementById("ladderInput").value = t.ladderStr || "";
-      pullGlobalsFromUI(); render(); alert("已套用模板的逾期階梯");
-    };
-  }
-  const btnTplExport = document.getElementById("btnTplExport");
-  if(btnTplExport){
-    btnTplExport.onclick = ()=>{
-      const list = loadTemplates();
-      const blob = new Blob([JSON.stringify(list, null, 2)], {type:"application/json"});
-      const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download="usedpc_templates_v8_5.json"; a.click();
-    };
-  }
-  let tplImportedFile = null;
-  const tplFileInput = document.getElementById("tplFileImport");
-  if(tplFileInput){
-    tplFileInput.addEventListener("change", e=>{ tplImportedFile = e.target.files[0] || null; });
-  }
-  const btnTplFileImport = document.getElementById("btnTplFileImport");
-  if(btnTplFileImport){
-    btnTplFileImport.onclick = async ()=>{
-      if(!tplImportedFile){ alert("請先選擇模板 JSON 檔"); return; }
-      try{
-        const txt = await tplImportedFile.text();
-        const arr = JSON.parse(txt);
-        if(!Array.isArray(arr)) throw new Error("格式錯誤：非陣列");
-        localStorage.setItem("sinya_usedpc_templates_v8_5", JSON.stringify(arr));
-        refreshTplList(); alert("模板 JSON 已匯入");
-      }catch(e){ alert("匯入失敗：" + e.message); }
-    };
-  }
-  function initTemplateManager(){ refreshTplList(); }
-  initTemplateManager();
 });
-

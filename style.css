@@ -66,7 +66,7 @@ textarea{min-height:64px}
 .btn.danger{background:linear-gradient(180deg,#3b0f12,#2a0c0e); border-color:#5a1d23; color:#ffe7ea}
 .btn.ghost{background:transparent; border-color:#303949}
 .table-wrap{overflow:auto; border-radius:12px; border:1px solid var(--border)}
-table{width:100%; border-collapse:separate; border-spacing:0; min-width:900px}
+table{width:100%; border-collapse:separate; border-spacing:0; min-width:1000px}
 th, td{padding:10px 12px; border-bottom:1px solid #1a222e; text-align:left; vertical-align:middle}
 thead th{position:sticky; top:0; background:#0f1419; z-index:1}
 tbody tr:hover{background:#0e141a}

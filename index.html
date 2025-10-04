@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>SINYA USEDPC Dashboard — v8.5 Pro</title>
+  <title>SINYA USEDPC Dashboard — 8.5 Pro / 2025 Q4</title>
   <link rel="stylesheet" href="style.css"/>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -12,11 +12,8 @@
 </head>
 <body>
   <header class="app-header">
-    <h1>SINYA USEDPC Dashboard — v8.4 Pro / 2025 Q4 <span class="tag">custom</span></h1>
+    <h1>SINYA USEDPC Dashboard — 8.5 Pro / 2025 Q4 <span class="tag">calendar-month-fix</span></h1>
     <div class="header-actions">
-      <button id="btnSaveScenario" class="btn primary">儲存情境</button>
-      <button id="btnLoadScenario" class="btn">載入情境</button>
-      <button id="btnReset" class="btn danger">重置</button>
       <label class="switch">
         <input type="checkbox" id="toggleDiagnostics"/>
         <span class="slider"></span>
@@ -214,6 +211,7 @@
               <th>分類</th>
               <th>回收日</th>
               <th>庫存天數</th>
+              <th>第N月</th>
               <th>成本</th>
               <th>毛利率</th>
               <th>市場價</th>
@@ -229,71 +227,22 @@
           <tbody></tbody>
           <tfoot>
             <tr>
-              <td colspan="9" class="right">二手總價：</td>
+              <td colspan="10" class="right">二手總價：</td>
               <td id="sumPrice" class="mono">0</td>
               <td id="sumProfit" class="mono">0</td>
-              <td colspan="3"></td>
+              <td colspan="4"></td>
             </tr>
           </tfoot>
         </table>
       </div>
     </section>
 
-    <section class="card">
-      <h2>係數／階梯 模板管理（儲存 / 載入 / 套用）</h2>
-      <p class="muted">將目前「全域係數（含累積模式）＋逾期階梯」存成一個模板；或載入模板並套用到全域、或批次覆寫目前篩選的單品。</p>
-      <div class="grid two">
-        <div class="form-row">
-          <label>模板名稱</label>
-          <input id="tplName" type="text" placeholder="例如：標準12月遞減"/>
-        </div>
-        <div class="form-row align-end">
-          <button id="btnTplSave" class="btn success">儲存為模板</button>
-          <button id="btnTplExport" class="btn">匯出模板 JSON</button>
-          <label class="file"><input id="tplFileImport" type="file" accept=".json"/><span>選擇模板 JSON 以匯入</span></label>
-          <button id="btnTplFileImport" class="btn primary">匯入 JSON</button>
-        </div>
-      </div>
-      <div class="grid two">
-        <div class="form-row">
-          <label>已儲存模板</label>
-          <select id="tplList"></select>
-        </div>
-        <div class="form-row align-end">
-          <button id="btnTplApplyGlobal" class="btn primary">套用係數到全域</button>
-          <button id="btnTplApplyItems" class="btn">套用係數到目前篩選單品（覆寫）</button>
-          <button id="btnTplApplyLadder" class="btn">套用階梯到全域</button>
-          <button id="btnTplDelete" class="btn danger">刪除模板</button>
-        </div>
-      </div>
-    </section>
-
-    <section class="card">
-      <h2>匯入 / 匯出</h2>
-      <div class="grid three">
-        <div class="form-row">
-          <button id="btnExportJSON" class="btn">匯出 JSON</button>
-          <button id="btnExportCSV" class="btn">匯出 CSV</button>
-          <button id="btnExportXLSX" class="btn">匯出 XLSX</button>
-        </div>
-        <div class="form-row">
-          <label class="file">
-            <input id="fileImport" type="file" accept=".json,.csv,.xlsx"/>
-            <span>選擇檔案以匯入（JSON / CSV / XLSX）</span>
-          </label>
-        </div>
-        <div class="form-row align-end">
-          <button id="btnImport" class="btn primary">開始匯入</button>
-        </div>
-      </div>
-    </section>
-
     <section class="card subtle">
-      <h3>v8.5 Pro 變更摘要</h3>
+      <h3>8.5 Pro / 2025 Q4 變更摘要</h3>
       <ul>
-        <li>新增：<b>市價上限</b>，最終售價不可高於「市價 × (1 + 市價調整％)」。</li>
-        <li>診斷模式新增「市價上限」與「上限/下限衝突」提示。</li>
-        <li>延續：正確計算順序、尾數護欄、單品月係數覆寫、快速貼上、按月自動生成階梯、累積降幅、模板管理、批次僅篩選、重新計算等。</li>
+        <li>修正：<b>每月回收係數採「曆法月」計算</b>（同月日未到不算新的一個月）。</li>
+        <li>延續：<b>市價上限</b>（最終 ≤ 市價 × (1 + 市價調整％)）。</li>
+        <li>診斷：顯示中間值＋<b>上限/下限衝突</b>提示，另新增顯示「第N月」。</li>
       </ul>
     </section>
   </main>
