@@ -1,7 +1,8 @@
-// SINYA USEDPC Dashboard — v8.6 Pro
+// SINYA USEDPC Dashboard — v8.7 Pro
 // 修正 v8.5 載入當機；新增自動存檔、Excel／CSV 匯入匯出、篩選與批次、刪除可復原。
 // 月序規則：滿 N 個曆法月 = 第 N 月；未滿 1 個月不套係數（1.00）；滿 18 個月以上固定第 18 月。
 // 尾數規則：往下取（11,450 → 11,449／11,399），會跌破底線時才往上取。
+// 底線規則（v8.7）：庫存 ≥90 天成本底線降為成本、≥180 天不設成本底線（可低於成本，標示需主管核准）；市價下限以原始市價計。
 "use strict";
 
 const $ = (sel) => document.querySelector(sel);
@@ -11,7 +12,7 @@ const on = (target, ev, fn) => {
   return el;
 };
 
-const APP_VERSION = "8.6";
+const APP_VERSION = "8.7";
 const STORAGE_KEY = "sinya-usedpc-dashboard";
 const CATEGORIES = ["NB", "DT", "MON", "DIY", "OTH"];
 const COEFF_MONTHS = 18;
@@ -27,7 +28,13 @@ const defaultGlobals = () => ({
   ladder: [{ days: 30, adj: -0.05 }, { days: 60, adj: -0.10 }, { days: 90, adj: -0.15 }],
   monthlyCoeffs: Array.from({ length: COEFF_MONTHS }, () => 1),
   cumulativeMode: false,
-  coeffBasis: "purchase" // "purchase" | "recycle"
+  coeffBasis: "purchase", // "purchase" | "recycle"
+  // 底線依庫齡放寬（v8.7）：庫存 ≥ 第一階天數 → 底線毛利率改為第一階值；≥ 第二階天數 → 第二階值（null = 不設底線，可低於成本）
+  floorRelaxOn: true,
+  floorTier1Days: 90,
+  floorTier1Margin: 0,
+  floorTier2Days: 180,
+  floorTier2Margin: null
 });
 
 const state = {
@@ -153,6 +160,18 @@ function tidyDown(x, unit, tailMode) {
   return Math.floor((x + EPS) / unit) * unit;
 }
 
+/** 依庫存天數決定成本底線的毛利率。回傳 { margin: number|null（null = 不設底線）, tier: 0|1|2 } */
+function floorMarginFor(days, g) {
+  const base = Math.max(0, numOr(g.minMarginFloor, 0));
+  let res = { margin: base, tier: 0 };
+  if (!g.floorRelaxOn) return res;
+  const t1 = numOr(g.floorTier1Days, null);
+  const t2 = numOr(g.floorTier2Days, null);
+  if (t1 !== null && days >= t1) res = { margin: numOr(g.floorTier1Margin, 0), tier: 1 };
+  if (t2 !== null && days >= t2) res = { margin: isBlank(g.floorTier2Margin) ? null : numOr(g.floorTier2Margin, null), tier: 2 };
+  return res;
+}
+
 // ============================================================
 // 核心計算
 // 順序：毛利 → 階梯 → 月係數 → 最低毛利底線 → 市價下限 → 取整（不破底線）→ 尾數（往下、不破底線）→ 市價上限
@@ -169,7 +188,6 @@ function computePrice(item, g, today) {
   const roundUnit = Math.max(1, numOr(g.roundUnit, 1));
   const roundMode = g.roundMode || "nearest";
   const tailMode = g.tailMode || "none";
-  const minMarginFloor = Math.max(0, numOr(g.minMarginFloor, 0));
   const notBelowMarketPct = numOr(g.notBelowMarketPct, 0);
   const ladder = Array.isArray(g.ladder) ? g.ladder : [];
 
@@ -226,13 +244,15 @@ function computePrice(item, g, today) {
   Object.assign(steps, { coeff, coeffSource: own ? "單品覆寫" : "全域", afterCoeff: price });
 
   // ---- 下限 ----
-  const minByMargin = r6(cost * (1 + minMarginFloor));
-  const marketFloor = adjustedMarket === null ? null : r6(adjustedMarket * (1 + notBelowMarketPct));
-  const floor = Math.max(minByMargin, marketFloor === null ? -Infinity : marketFloor);
+  // 成本底線依庫齡放寬；市價下限以「原始市價」為基準（v8.6 以前誤用調整後市價，-5% 實際只低 0.25%），且不高於市價上限
+  const fm = floorMarginFor(daysInStock, g);
+  const minByMargin = fm.margin === null ? null : r6(cost * (1 + fm.margin));
+  const marketFloor = market === null ? null : Math.min(r6(market * (1 + notBelowMarketPct)), adjustedMarket);
+  const floor = Math.max(minByMargin ?? -Infinity, marketFloor ?? -Infinity);
   const ceil = adjustedMarket === null ? Infinity : adjustedMarket;
-  Object.assign(steps, { minByMargin, marketFloor, floor, ceil });
+  Object.assign(steps, { floorTier: fm.tier, floorMargin: fm.margin, minByMargin, marketFloor, floor, ceil });
 
-  if (price < minByMargin) price = minByMargin;
+  if (minByMargin !== null && price < minByMargin) price = minByMargin;
   steps.afterMinMargin = price;
   if (marketFloor !== null && price < marketFloor) price = marketFloor;
   steps.afterMarketFloor = price;
@@ -262,8 +282,9 @@ function computePrice(item, g, today) {
   steps.afterCeil = price;
   if (conflict) warnings.push(`市價上限 ${fmtN(ceil)} 低於底線 ${fmtN(floor)}，已以市價上限計`);
 
-  price = Math.round(price);
+  price = Math.max(0, Math.round(price));
   const profit = Math.round(price - cost);
+  if (cost > 0 && price < cost) warnings.push(`低於成本 ${fmtN(cost - price)} 元（庫存 ${daysInStock} 天），需主管核准`);
   return { price, profit, steps, warnings, conflict };
 }
 
@@ -293,6 +314,14 @@ function normalizeGlobals(g) {
   }
   out.cumulativeMode = !!src.cumulativeMode;
   out.coeffBasis = src.coeffBasis === "recycle" ? "recycle" : "purchase";
+  // 底線放寬：舊存檔沒有這些欄位 → 用預設；欄位存在但空白 → 視為停用該階（第二階毛利率空白 = 不設底線）
+  const has = (k) => Object.prototype.hasOwnProperty.call(src, k);
+  const blankOrNum = (v) => (isBlank(v) || String(v).trim() === "" ? null : numOr(v, null));
+  out.floorRelaxOn = has("floorRelaxOn") ? (typeof src.floorRelaxOn === "string" ? parseBoolCell(src.floorRelaxOn) : !!src.floorRelaxOn) : d.floorRelaxOn;
+  out.floorTier1Days = has("floorTier1Days") ? blankOrNum(src.floorTier1Days) : d.floorTier1Days;
+  out.floorTier1Margin = has("floorTier1Margin") ? (blankOrNum(src.floorTier1Margin) ?? 0) : d.floorTier1Margin;
+  out.floorTier2Days = has("floorTier2Days") ? blankOrNum(src.floorTier2Days) : d.floorTier2Days;
+  out.floorTier2Margin = has("floorTier2Margin") ? blankOrNum(src.floorTier2Margin) : d.floorTier2Margin;
   return out;
 }
 function normalizeItem(it) {
@@ -438,6 +467,12 @@ function computedCells(r) {
     profit: `<span class="${r.profit < 0 ? "neg" : ""}">${fmtN(r.profit)}</span>`
   };
 }
+function floorLabel(s) {
+  const g = state.globals;
+  const tierTxt = s.floorTier === 1 ? `≥${g.floorTier1Days}天放寬` : s.floorTier === 2 ? `≥${g.floorTier2Days}天放寬` : "最低毛利";
+  if (s.floorMargin === null) return `成本底線（${tierTxt}：不設，可低於成本）`;
+  return `成本底線（${tierTxt} ${fmtPct(s.floorMargin)}）${fmtN(s.minByMargin)}`;
+}
 function diagHtml(r) {
   const s = r.steps;
   const step = (label, val, cls = "") => `<span class="dstep ${cls}"><span class="dl">${label}</span><span class="dv mono">${val}</span></span>`;
@@ -449,7 +484,7 @@ function diagHtml(r) {
     step(s.coeffMonth > 0
       ? `月係數（${basisLabel}第${s.coeffMonth}月 ×${fmtCoeff(s.coeff)}${s.coeffSource === "單品覆寫" ? "・單品覆寫" : ""}）`
       : `月係數（${s.elapsed === null ? "無日期" : "未滿1月"}，不套）`, fmtN(s.afterCoeff)),
-    step(`最低毛利底線 ${fmtN(s.minByMargin)}`, fmtN(s.afterMinMargin)),
+    step(floorLabel(s), fmtN(s.afterMinMargin), s.floorTier > 0 ? "hit" : ""),
     step(`市價下限 ${fmtN(s.marketFloor)}`, fmtN(s.afterMarketFloor)),
     step("取整", fmtN(s.afterRounding)),
     step("尾數", fmtN(s.afterTail)),
@@ -544,6 +579,29 @@ function pullGlobalsFromUI() {
   showLadderWarn(lp);
   g.cumulativeMode = $("#cumulativeMode").checked;
   g.coeffBasis = $("#coeffBasis").value;
+  const blankOrNum = (sel) => { const v = $(sel).value.trim(); return v === "" ? null : numOr(v, null); };
+  g.floorRelaxOn = $("#floorRelaxOn").checked;
+  g.floorTier1Days = blankOrNum("#floorTier1Days");
+  g.floorTier1Margin = blankOrNum("#floorTier1Margin") ?? 0;
+  g.floorTier2Days = blankOrNum("#floorTier2Days");
+  g.floorTier2Margin = blankOrNum("#floorTier2Margin");
+  showFloorWarn();
+}
+function showFloorWarn() {
+  const g = state.globals, el = $("#floorWarn");
+  if (!el) return;
+  const msgs = [];
+  if (g.floorRelaxOn) {
+    if (g.floorTier1Days !== null && g.floorTier2Days !== null && g.floorTier2Days <= g.floorTier1Days) msgs.push("第二階天數應大於第一階");
+    if (g.floorTier1Margin > Math.max(0, numOr(g.minMarginFloor, 0))) msgs.push("第一階底線高於基本底線，庫存越久反而越貴");
+    if (g.floorTier2Margin !== null && g.floorTier2Margin > g.floorTier1Margin) msgs.push("第二階底線高於第一階");
+  }
+  el.textContent = msgs.join("；");
+  el.hidden = msgs.length === 0;
+  $$floorInputs().forEach((inp) => { inp.disabled = !g.floorRelaxOn; });
+}
+function $$floorInputs() {
+  return ["#floorTier1Days", "#floorTier1Margin", "#floorTier2Days", "#floorTier2Margin"].map((s) => $(s)).filter(Boolean);
 }
 function showLadderWarn(lp) {
   const el = $("#ladderWarn");
@@ -565,6 +623,13 @@ function pushGlobalsToUI() {
   showLadderWarn(parseLadder($("#ladderInput").value));
   $("#cumulativeMode").checked = !!g.cumulativeMode;
   $("#coeffBasis").value = g.coeffBasis;
+  const show = (v) => (v === null || v === undefined ? "" : v);
+  $("#floorRelaxOn").checked = !!g.floorRelaxOn;
+  $("#floorTier1Days").value = show(g.floorTier1Days);
+  $("#floorTier1Margin").value = show(g.floorTier1Margin);
+  $("#floorTier2Days").value = show(g.floorTier2Days);
+  $("#floorTier2Margin").value = show(g.floorTier2Margin);
+  showFloorWarn();
   buildCoeffGrid();
 }
 function buildCoeffGrid() {
@@ -632,7 +697,12 @@ const GLOBAL_FIELDS = [
   { key: "notBelowMarketPct", label: "不得低於市場價X％", note: "例 -0.05" },
   { key: "ladder", label: "逾期降價階梯", note: "天數/百分比，逗號分隔，例 30/-0.05,60/-0.10" },
   { key: "coeffBasis", label: "係數月序基準", note: "purchase（購買日）／recycle（回收日）" },
-  { key: "cumulativeMode", label: "累積降幅模式", note: "TRUE／FALSE" }
+  { key: "cumulativeMode", label: "累積降幅模式", note: "TRUE／FALSE" },
+  { key: "floorRelaxOn", label: "底線依庫齡放寬", note: "TRUE／FALSE" },
+  { key: "floorTier1Days", label: "放寬第一階天數", note: "庫存 ≥ 此天數，例 90；空白 = 不用此階" },
+  { key: "floorTier1Margin", label: "第一階底線毛利率", note: "0 = 成本" },
+  { key: "floorTier2Days", label: "放寬第二階天數", note: "庫存 ≥ 此天數，例 180；空白 = 不用此階" },
+  { key: "floorTier2Margin", label: "第二階底線毛利率", note: "空白 = 不設底線（可低於成本）；-0.2 = 成本 8 折" }
 ];
 
 function normHeader(h) {
@@ -782,7 +852,7 @@ function rowsToGlobals(rows) {
   for (const f of GLOBAL_FIELDS) {
     if (!byKey.has(f.key)) continue;
     const v = byKey.get(f.key);
-    if (f.key === "cumulativeMode") g.cumulativeMode = parseBoolCell(v);
+    if (f.key === "cumulativeMode" || f.key === "floorRelaxOn") g[f.key] = parseBoolCell(v);
     else if (f.key === "ladder") g.ladder = String(v ?? "");
     else g[f.key] = typeof v === "string" ? v.trim() : v;
   }
@@ -816,7 +886,8 @@ function globalsToAoa() {
   for (const f of GLOBAL_FIELDS) {
     let v = g[f.key];
     if (f.key === "ladder") v = g.ladder.map((x) => `${x.days}/${x.adj}`).join(",");
-    if (f.key === "cumulativeMode") v = g.cumulativeMode ? "TRUE" : "FALSE";
+    if (f.key === "cumulativeMode" || f.key === "floorRelaxOn") v = g[f.key] ? "TRUE" : "FALSE";
+    if (v === null || v === undefined) v = "";
     rows.push([f.label, v, f.key, f.note]);
   }
   g.monthlyCoeffs.forEach((v, i) => rows.push([`第${i + 1}月係數`, v, `coeff${i + 1}`, i === 0 ? "滿 N 個月套第 N 月；未滿 1 個月不套" : ""]));
@@ -1025,8 +1096,9 @@ function bindEvents() {
   on(tbody, "click", onTableClick);
 
   // 全域參數：文字／數字即時、選單／勾選在 change
-  ["#roundUnit", "#defaultMarketAdj", "#minMarginFloor", "#notBelowMarketPct", "#ladderInput"].forEach((sel) => on(sel, "input", onGlobalChange));
-  ["#roundMode", "#tailMode", "#cumulativeMode", "#coeffBasis"].forEach((sel) => on(sel, "change", onGlobalChange));
+  ["#roundUnit", "#defaultMarketAdj", "#minMarginFloor", "#notBelowMarketPct", "#ladderInput",
+    "#floorTier1Days", "#floorTier1Margin", "#floorTier2Days", "#floorTier2Margin"].forEach((sel) => on(sel, "input", onGlobalChange));
+  ["#roundMode", "#tailMode", "#cumulativeMode", "#coeffBasis", "#floorRelaxOn"].forEach((sel) => on(sel, "change", onGlobalChange));
   on("#roundUnit", "change", () => { $("#roundUnit").value = state.globals.roundUnit; });
 
   // 月係數格
