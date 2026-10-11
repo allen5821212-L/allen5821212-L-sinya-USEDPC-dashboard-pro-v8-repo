@@ -1,8 +1,8 @@
-// SINYA USEDPC Dashboard — v8.7 Pro
+// SINYA USEDPC Dashboard — v8.7.1 Pro
 // 修正 v8.5 載入當機；新增自動存檔、Excel／CSV 匯入匯出、篩選與批次、刪除可復原。
 // 月序規則：滿 N 個曆法月 = 第 N 月；未滿 1 個月不套係數（1.00）；滿 18 個月以上固定第 18 月。
 // 尾數規則：往下取（11,450 → 11,449／11,399），會跌破底線時才往上取。
-// 底線規則（v8.7）：庫存 ≥90 天成本底線降為成本、≥180 天不設成本底線（可低於成本，標示需主管核准）；市價下限以原始市價計。
+// 底線規則（v8.7）：庫存 ≥90 天成本底線降為成本、≥180 天底線為成本 8 折（可低於成本，標示需主管核准）；市價下限以原始市價計。
 "use strict";
 
 const $ = (sel) => document.querySelector(sel);
@@ -12,7 +12,7 @@ const on = (target, ev, fn) => {
   return el;
 };
 
-const APP_VERSION = "8.7";
+const APP_VERSION = "8.7.1";
 const STORAGE_KEY = "sinya-usedpc-dashboard";
 const CATEGORIES = ["NB", "DT", "MON", "DIY", "OTH"];
 const COEFF_MONTHS = 18;
@@ -25,7 +25,7 @@ const defaultGlobals = () => ({
   defaultMarketAdj: 0.05,
   minMarginFloor: 0.10,
   notBelowMarketPct: -0.05,
-  ladder: [{ days: 30, adj: -0.05 }, { days: 60, adj: -0.10 }, { days: 90, adj: -0.15 }],
+  ladder: [{ days: 30, adj: -0.05 }, { days: 60, adj: -0.10 }, { days: 90, adj: -0.15 }, { days: 180, adj: -0.25 }],
   monthlyCoeffs: Array.from({ length: COEFF_MONTHS }, () => 1),
   cumulativeMode: false,
   coeffBasis: "purchase", // "purchase" | "recycle"
@@ -34,8 +34,25 @@ const defaultGlobals = () => ({
   floorTier1Days: 90,
   floorTier1Margin: 0,
   floorTier2Days: 180,
-  floorTier2Margin: null
+  floorTier2Margin: -0.2 // 最低到成本 8 折（空白／null = 不設底線）
 });
+const OLD_DEFAULT_LADDER = "30/-0.05,60/-0.1,90/-0.15";
+/** 舊版自動存檔升級：只動「仍是舊預設值」的設定，使用者自己改過的保留。回傳套用的項目說明。 */
+function migrateSavedGlobals(saved) {
+  const notes = [];
+  const v = String(saved.version || "");
+  if (v === "8.7.1" || !saved.globals) return notes;
+  const g = saved.globals;
+  if (Array.isArray(g.ladder) && g.ladder.map((x) => `${Number(x.days)}/${Number(x.adj)}`).join(",") === OLD_DEFAULT_LADDER) {
+    g.ladder = defaultGlobals().ladder;
+    notes.push("階梯加上 180 天 -25%");
+  }
+  if (v === "8.7" && g.floorRelaxOn && Number(g.floorTier2Days) === 180 && (g.floorTier2Margin === null || g.floorTier2Margin === undefined)) {
+    g.floorTier2Margin = defaultGlobals().floorTier2Margin;
+    notes.push("180 天後最低到成本 8 折");
+  }
+  return notes;
+}
 
 const state = {
   items: [],
@@ -1262,6 +1279,7 @@ function bindEvents() {
 
 function init() {
   const saved = loadSaved();
+  const migrated = saved ? migrateSavedGlobals(saved) : [];
   if (saved) {
     state.globals = normalizeGlobals(saved.globals);
     state.items = saved.items.map(normalizeItem);
@@ -1277,6 +1295,10 @@ function init() {
   updateGenPreview();
   $("#newDate").value = toISODate(todayLocal());
   render();
+  if (migrated.length) {
+    saveNow();
+    showToast(`已套用 8.7.1 新預設：${migrated.join("、")}（可在全域參數修改）`);
+  }
 }
 
 if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
