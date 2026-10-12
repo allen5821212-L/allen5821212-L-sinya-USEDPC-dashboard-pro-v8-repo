@@ -3,404 +3,278 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>SINYA USEDPC Dashboard — 8.7.1 Pro</title>
+  <title>SINYA 二手 PC 定價 — 9.0</title>
   <link rel="stylesheet" href="style.css"/>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <!-- SheetJS：優先用官方 CDN 0.20.3（已修補讀檔安全性問題），失敗才退回 jsDelivr 0.18.5 -->
-  <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"
+  <!-- SheetJS（Excel 讀寫）：官方 CDN 0.20.3，失敗才退回 jsDelivr 0.18.5 -->
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js" async
           onerror="var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';document.head.appendChild(s);"></script>
 </head>
 <body>
   <header class="app-header">
-    <h1>SINYA USEDPC Dashboard — 8.7.1 Pro <span class="tag">aging floor + autosave</span></h1>
-    <div class="header-actions">
+    <div class="brand">
+      <h1>SINYA 二手 PC 定價 <span class="tag">9.0</span></h1>
       <span id="saveStatus" class="save-status muted"></span>
-      <label class="switch" title="在每一列下方顯示計算步驟">
-        <input type="checkbox" id="toggleDiagnostics"/>
-        <span class="slider"></span>
-      </label>
-      <span class="switch-label">診斷模式</span>
+    </div>
+    <div class="header-actions">
+      <button id="lockBadge" class="lock-badge" type="button" title="定價政策鎖定狀態"></button>
     </div>
   </header>
 
+  <nav class="tabs" role="tablist" aria-label="功能">
+    <button role="tab" data-tab="list" aria-selected="true">查價作業</button>
+    <button role="tab" data-tab="overview">經營總覽</button>
+    <button role="tab" data-tab="estimate">回收估價</button>
+    <button role="tab" data-tab="policy">定價政策</button>
+    <button role="tab" data-tab="data">資料管理</button>
+  </nav>
+
   <main class="container">
-    <section class="card">
-      <h2>全域參數</h2>
-      <div class="grid three">
-        <div class="form-row">
-          <label for="roundUnit">四捨五入單位</label>
-          <input id="roundUnit" type="number" step="1" value="10" min="1"/>
-          <small class="muted">建議 ≥ 1；輸入非數值將回退為 1。</small>
-        </div>
-        <div class="form-row">
-          <label for="roundMode">四捨五入方式</label>
-          <select id="roundMode">
-            <option value="nearest">四捨五入</option>
-            <option value="ceil">無條件進位</option>
-            <option value="floor">無條件捨去</option>
-          </select>
-          <small class="muted">取整後若低於底線，會改為往上取整。</small>
-        </div>
-        <div class="form-row">
-          <label for="tailMode">尾數優化</label>
-          <select id="tailMode">
-            <option value="none">不調整</option>
-            <option value="9">尾數9</option>
-            <option value="99">尾數99</option>
-          </select>
-          <small class="muted">往下取（11,450 → 11,449／11,399）；會跌破底線時才往上取。</small>
-        </div>
-        <div class="form-row">
-          <label for="defaultMarketAdj">預設市價調整％（例：0.05）</label>
-          <input id="defaultMarketAdj" type="number" step="0.01" value="0.05"/>
-        </div>
-        <div class="form-row">
-          <label for="minMarginFloor">最低毛利率底線（例：0.10）</label>
-          <input id="minMarginFloor" type="number" step="0.01" value="0.10" min="0"/>
-          <small class="muted">庫存未達下方「底線放寬」天數前適用。</small>
-        </div>
-        <div class="form-row">
-          <label for="notBelowMarketPct">不得低於市場價 X％（例：-0.05 = 最低為市價 95 折）</label>
-          <input id="notBelowMarketPct" type="number" step="0.01" value="-0.05"/>
-          <small class="muted">以原始市場價計算；不受底線放寬影響。</small>
-        </div>
-      </div>
+    <!-- ======================= 查價作業 ======================= -->
+    <section id="tab-list" class="tab-panel" role="tabpanel">
+      <details class="card add-card" id="addCard" open>
+        <summary><h2>新增回收品</h2><span class="muted small">填名稱、成本、參考市價就能先看建議售價</span></summary>
+        <form id="addForm" autocomplete="off">
+          <div class="grid four">
+            <label class="field span-2">名稱<input name="name" type="text" placeholder="例：ASUS TUF Gaming A15" required/></label>
+            <label class="field">分類<select name="category"></select></label>
+            <label class="field">成色<select name="grade"></select></label>
+            <label class="field">成本（元）<input name="cost" type="number" step="1" min="0" inputmode="numeric"/></label>
+            <label class="field">回收日<input name="date" type="date"/></label>
+            <label class="field">參考市價（A 級行情）<input name="market" type="number" step="1" min="0" inputmode="numeric" placeholder="同型號 A 級二手行情"/></label>
+            <label class="field">市價日期<input name="marketDate" type="date"/></label>
+            <label class="field span-2">市價來源<input name="marketSource" type="text" placeholder="例：露天／蝦皮近 30 天成交均價"/></label>
+          </div>
+          <details class="more">
+            <summary>更多欄位（規格、品況、編號、毛利率）</summary>
+            <div class="grid four">
+              <label class="field">庫存編號<input name="sku" type="text" placeholder="留空自動產生"/></label>
+              <label class="field">序號<input name="serial" type="text"/></label>
+              <label class="field">CPU<input name="specCpu" type="text"/></label>
+              <label class="field">GPU<input name="specGpu" type="text"/></label>
+              <label class="field">記憶體<input name="specRam" type="text"/></label>
+              <label class="field">儲存<input name="specSsd" type="text"/></label>
+              <label class="field">電池健康度（%）<input name="battery" type="number" min="0" max="100" step="1"/></label>
+              <label class="field">剩餘保固（月）<input name="warrantyMonths" type="number" min="0" step="1"/></label>
+              <label class="field">購買日（原購）<input name="purchaseDate" type="date"/></label>
+              <label class="field">新品價（元）<input name="newPrice" type="number" min="0" step="1"/></label>
+              <label class="field">目標毛利率（%，無市價時用）<input name="margin" type="number" step="0.1" placeholder="空白＝政策預設"/></label>
+              <label class="field">單品加成（%）<input name="marketAdj" type="number" step="0.1" placeholder="空白＝門市加成"/></label>
+              <label class="check"><input name="accessoriesComplete" type="checkbox" checked/> 配件齊全</label>
+              <label class="check"><input name="repair" type="checkbox"/> 有維修紀錄</label>
+              <label class="field span-2">維修備註<input name="repairNote" type="text"/></label>
+              <label class="field span-4">備註<input name="note" type="text"/></label>
+            </div>
+          </details>
+          <div class="add-foot">
+            <div id="addPreview" class="add-preview" aria-live="polite"></div>
+            <button class="btn success" type="submit">加入清單</button>
+          </div>
+        </form>
+      </details>
 
-      <div class="grid two">
-        <div class="form-row">
-          <label for="ladderInput">逾期降價階梯（格式：天數/百分比，以逗號分隔）</label>
-          <input id="ladderInput" type="text" value="30/-0.05,60/-0.10,90/-0.15,180/-0.25"/>
-          <small>例如 30/-0.05 表示庫存 ≥30 天降價 5%。系統會套用「符合的最大門檻」（不累加）。</small>
-          <small id="ladderWarn" class="warn-text" hidden></small>
-        </div>
-        <div class="form-row">
-          <label for="coeffBasis">係數月序基準</label>
-          <select id="coeffBasis">
-            <option value="purchase">依「購買日(原購)」</option>
-            <option value="recycle">依「回收日(入庫)」</option>
-          </select>
-          <small class="muted">估價情境多採「購買日」，庫存售價可採「回收日」。購買日空白時改用回收日。</small>
-        </div>
-      </div>
-
-      <div class="generator">
-        <h3>底線依庫齡放寬（滯銷出清）</h3>
-        <div class="form-row"><label class="checkbox"><input type="checkbox" id="floorRelaxOn" checked/> 啟用：庫存越久，成本底線越低</label></div>
-        <div class="grid four">
-          <div class="form-row">
-            <label for="floorTier1Days">第一階：庫存 ≥ 天數</label>
-            <input id="floorTier1Days" type="number" min="0" step="1" value="90"/>
+      <section class="card">
+        <div class="filter-row">
+          <div class="seg" id="statusSeg" role="group" aria-label="狀態">
+            <button type="button" data-status="stock" class="on">在庫</button>
+            <button type="button" data-status="sold">已售出</button>
+            <button type="button" data-status="all">全部</button>
           </div>
-          <div class="form-row">
-            <label for="floorTier1Margin">底線毛利率改為（0 = 成本）</label>
-            <input id="floorTier1Margin" type="number" step="0.01" value="0"/>
-          </div>
-          <div class="form-row">
-            <label for="floorTier2Days">第二階：庫存 ≥ 天數</label>
-            <input id="floorTier2Days" type="number" min="0" step="1" value="180"/>
-          </div>
-          <div class="form-row">
-            <label for="floorTier2Margin">底線毛利率改為（-0.2 = 成本 8 折；空白 = 不設）</label>
-            <input id="floorTier2Margin" type="number" step="0.01" value="-0.2" placeholder="不設底線，可低於成本"/>
-          </div>
-        </div>
-        <small class="muted">庫存天數依回收日計算。底線只決定「最低能降到哪」，實際降幅由上方逾期降價階梯與月係數決定。售價低於成本的列會標 ⚠「需主管核准」，可用「只看有警示」篩出。</small>
-        <small id="floorWarn" class="warn-text" hidden></small>
-      </div>
-
-      <div class="generator">
-        <h3>按月自動生成階梯</h3>
-        <div class="grid four">
-          <div class="form-row">
-            <label for="genStartMonth">起始月</label>
-            <input id="genStartMonth" type="number" min="1" max="36" value="3"/>
-          </div>
-          <div class="form-row">
-            <label for="genEndMonth">結束月</label>
-            <input id="genEndMonth" type="number" min="1" max="36" value="12"/>
-          </div>
-          <div class="form-row">
-            <label for="genPerMonthPct">每月調整％（負數=降價，例如 -0.05）</label>
-            <input id="genPerMonthPct" type="number" step="0.01" value="-0.05"/>
-          </div>
-          <div class="form-row">
-            <label for="genMode">累進方式</label>
-            <select id="genMode">
-              <option value="linear">線性累加（-5%、-10%、-15%…）</option>
-              <option value="compound">複利（×0.95、×0.95²…）</option>
-            </select>
-          </div>
-        </div>
-        <p id="genPreview" class="muted mono small"></p>
-        <div class="form-row align-end">
-          <button id="btnGenLadder" class="btn success">生成 → 套用到階梯</button>
-        </div>
-      </div>
-    </section>
-
-    <section class="card">
-      <h2>每月回收係數（1–18 月）</h2>
-      <div class="form-row"><label class="checkbox"><input type="checkbox" id="cumulativeMode"/> 啟用「每月以累積降幅」模式（當月係數 × 前月累乘）</label></div>
-      <p class="muted">月序規則：<b>滿 N 個曆法月 = 第 N 月</b>（例：8/4 購買，9/4 起為第 1 月、10/4 起為第 2 月）。<b>未滿 1 個月不套係數（1.00）</b>；滿 18 個月以上固定用第 18 月。基準日依上方「係數月序基準」。</p>
-      <div class="grid six" id="coeffGrid"></div>
-      <div class="grid two" style="margin-top:8px">
-        <div class="form-row">
-          <label for="coeffPaste">快速貼上 1–18 月係數（以逗號或空白分隔）</label>
-          <textarea id="coeffPaste" rows="3" placeholder="例如：1 1 0.99 0.98 0.97 0.96 0.95 0.94 0.93 0.92 0.91 0.90 0.89 0.88 0.87 0.86 0.85 0.84"></textarea>
-        </div>
-        <div class="form-row align-end">
-          <button id="btnCoeffPasteGlobal" class="btn primary">套用到全域</button>
-          <button id="btnCoeffPasteItems" class="btn">套用到目前篩選的單品（覆寫）</button>
-          <button id="btnCoeffReset" class="btn ghost">全部重置為 1.00</button>
-        </div>
-      </div>
-    </section>
-
-    <section class="card">
-      <h2>新增回收品</h2>
-      <div class="grid three">
-        <div class="form-row">
-          <label for="newName">名稱</label>
-          <input id="newName" type="text" placeholder="例如：ROG NB 15”"/>
-        </div>
-        <div class="form-row">
-          <label for="newCategory">分類</label>
-          <select id="newCategory">
-            <option>NB</option>
-            <option>DT</option>
-            <option>MON</option>
-            <option>DIY</option>
-            <option>OTH</option>
-          </select>
-        </div>
-        <div class="form-row">
-          <label for="newPurchaseDate">購買日（原購）</label>
-          <input id="newPurchaseDate" type="date"/>
-        </div>
-        <div class="form-row">
-          <label for="newDate">回收日（入庫）</label>
-          <input id="newDate" type="date"/>
-        </div>
-        <div class="form-row">
-          <label for="newCost">成本</label>
-          <input id="newCost" type="number" step="1"/>
-        </div>
-        <div class="form-row">
-          <label for="newMargin">毛利率</label>
-          <input id="newMargin" type="number" step="0.01" placeholder="例如 0.20"/>
-        </div>
-        <div class="form-row">
-          <label for="newMarket">市場價（可空）</label>
-          <input id="newMarket" type="number" step="1" placeholder="可空"/>
-        </div>
-        <div class="form-row">
-          <label for="newMarketAdj">單品市價調整％（可空）</label>
-          <input id="newMarketAdj" type="number" step="0.01" placeholder="可空"/>
-        </div>
-        <div class="form-row checkbox-row">
-          <label class="checkbox"><input id="newRepair" type="checkbox"/> 有維修紀錄</label>
-        </div>
-        <div class="form-row" id="repairNoteRow" style="display:none;">
-          <label for="newRepairNote">維修備註</label>
-          <input id="newRepairNote" type="text" placeholder="維修內容、零件…"/>
-        </div>
-        <div class="form-row span-full align-end">
-          <button id="btnAdd" class="btn success">加入清單</button>
-        </div>
-      </div>
-    </section>
-
-    <section class="card">
-      <h2>篩選與批次</h2>
-      <div class="grid five">
-        <div class="form-row">
-          <label for="filterCategory">分類</label>
-          <select id="filterCategory">
+          <label class="field compact">分類<select id="fCategory"></select></label>
+          <label class="field compact grow">搜尋<input id="fKeyword" type="search" placeholder="編號、名稱、序號、規格、備註"/></label>
+          <label class="field compact">庫齡 ≥<input id="fMinDays" type="number" min="0" step="1" placeholder="天"/></label>
+          <label class="field compact">只看<select id="fView">
             <option value="">全部</option>
-            <option>NB</option>
-            <option>DT</option>
-            <option>MON</option>
-            <option>DIY</option>
-            <option>OTH</option>
-          </select>
+            <option value="warn">⚠ 需處理</option>
+            <option value="todo">✎ 待補資料</option>
+            <option value="retag">🏷 需重新標價</option>
+            <option value="below">低於成本</option>
+            <option value="over90">庫齡超過 90 天</option>
+          </select></label>
+          <button id="fClear" class="btn ghost small" type="button">清除</button>
         </div>
-        <div class="form-row">
-          <label for="searchKeyword">關鍵字（名稱／備註）</label>
-          <input id="searchKeyword" type="text" placeholder="輸入即篩選"/>
+        <div class="list-head">
+          <p class="muted small" id="listCount"></p>
+          <details class="batch" id="batchBox">
+            <summary class="btn small">批次操作</summary>
+            <div class="batch-panel">
+              <p class="muted small">套用到目前篩選結果（在庫）。空白＝不變更。</p>
+              <div class="grid four">
+                <label class="field">分類<select id="bCategory"></select></label>
+                <label class="field">成色<select id="bGrade"></select></label>
+                <label class="field">目標毛利率（%）<input id="bMargin" type="number" step="0.1"/></label>
+                <label class="field">單品加成（%）<input id="bAdj" type="number" step="0.1"/></label>
+              </div>
+              <div class="btn-row">
+                <button id="bApply" class="btn primary small" type="button">套用欄位</button>
+                <button id="bRetag" class="btn success small" type="button">全部重新標價（套用建議價）</button>
+                <button id="bTagList" class="btn small" type="button">匯出標價清單</button>
+                <button id="bDelete" class="btn danger small" type="button">刪除篩選結果</button>
+              </div>
+            </div>
+          </details>
         </div>
-        <div class="form-row">
-          <label for="filterMinDays">庫存天數 ≥</label>
-          <input id="filterMinDays" type="number" min="0" step="1" placeholder="不限"/>
+        <div class="table-wrap">
+          <table id="itemsTable" class="items">
+            <thead></thead>
+            <tbody></tbody>
+            <tfoot></tfoot>
+          </table>
         </div>
-        <div class="form-row checkbox-stack">
-          <label class="checkbox"><input id="filterRepair" type="checkbox"/> 只看有維修</label>
-          <label class="checkbox"><input id="filterWarn" type="checkbox"/> 只看有警示 ⚠</label>
-        </div>
-        <div class="form-row align-end">
-          <button id="btnClearFilter" class="btn ghost">清除篩選</button>
-        </div>
-      </div>
-      <p class="filter-count muted">目前篩選：<b id="filterCount">0</b> / <span id="totalCount">0</span> 筆</p>
-
-      <div class="subpanel">
-        <h3>批次套用到目前篩選的單品（空白 = 不變更）</h3>
-        <div class="grid four">
-          <div class="form-row">
-            <label for="batchMargin">毛利率</label>
-            <input id="batchMargin" type="number" step="0.01" placeholder="不變更"/>
-          </div>
-          <div class="form-row">
-            <label for="batchMarketAdj">市價調整％</label>
-            <input id="batchMarketAdj" type="number" step="0.01" placeholder="不變更"/>
-          </div>
-          <div class="form-row">
-            <label for="batchCategory">分類</label>
-            <select id="batchCategory">
-              <option value="">不變更</option>
-              <option>NB</option>
-              <option>DT</option>
-              <option>MON</option>
-              <option>DIY</option>
-              <option>OTH</option>
-            </select>
-          </div>
-          <div class="form-row align-end">
-            <button id="btnBatchApply" class="btn primary">套用到篩選結果</button>
-          </div>
-        </div>
-        <div class="btn-row">
-          <button id="btnBatchClearCoeffs" class="btn ghost">清除篩選結果的月係數覆寫</button>
-          <button id="btnBatchDelete" class="btn danger">刪除篩選結果</button>
-        </div>
-      </div>
+        <p id="emptyHint" class="muted empty-hint" hidden>沒有符合的資料。</p>
+      </section>
     </section>
 
-    <section class="card">
-      <h2>匯入匯出與存檔</h2>
-      <div class="grid two">
-        <div class="subpanel">
-          <h3>Excel／CSV</h3>
+    <!-- ======================= 經營總覽 ======================= -->
+    <section id="tab-overview" class="tab-panel" role="tabpanel" hidden>
+      <div class="filter-row">
+        <span class="muted small">售出期間</span>
+        <div class="seg" id="periodSeg" role="group" aria-label="售出期間">
+          <button type="button" data-days="30">近 30 天</button>
+          <button type="button" data-days="90" class="on">近 90 天</button>
+          <button type="button" data-days="365">近 365 天</button>
+          <button type="button" data-days="0">全部</button>
+        </div>
+      </div>
+      <div id="ovContent"></div>
+    </section>
+
+    <!-- ======================= 回收估價 ======================= -->
+    <section id="tab-estimate" class="tab-panel" role="tabpanel" hidden>
+      <section class="card">
+        <h2>回收估價</h2>
+        <p class="muted small">估算「收多少」：依二手行情或新品價×殘值係數推算售價，扣掉目標毛利與整新成本，得到建議收購價。月係數（殘值係數）只用在這裡，不影響售價。</p>
+        <form id="estForm" class="grid four" autocomplete="off">
+          <label class="field">參考依據<select name="refType">
+            <option value="used">二手行情（A 級）</option>
+            <option value="new">新品價 × 殘值係數</option>
+          </select></label>
+          <label class="field">參考價格（元）<input name="refPrice" type="number" min="0" step="1" required/></label>
+          <label class="field">購買日（新品價估算必填）<input name="purchaseDate" type="date"/></label>
+          <label class="field">分類<select name="category"></select></label>
+          <label class="field">成色<select name="grade"></select></label>
+          <label class="field">電池健康度（%）<input name="battery" type="number" min="0" max="100"/></label>
+          <label class="field">整新成本（元）<input name="refurbCost" type="number" min="0" step="1"/></label>
+          <label class="field">目標毛利率（%）<input name="targetMargin" type="number" step="0.1"/></label>
+          <label class="check"><input name="accessoriesComplete" type="checkbox" checked/> 配件齊全</label>
+          <label class="check"><input name="repair" type="checkbox"/> 有維修紀錄</label>
+        </form>
+        <div id="estResult" class="est-result" aria-live="polite"></div>
+      </section>
+    </section>
+
+    <!-- ======================= 定價政策 ======================= -->
+    <section id="tab-policy" class="tab-panel" role="tabpanel" hidden>
+      <section class="card" id="lockCard"></section>
+      <section class="card">
+        <div class="policy-head">
+          <h2>定價政策</h2>
           <div class="btn-row">
-            <button id="btnExportXLSX" class="btn success">匯出 Excel</button>
-            <button id="btnExportCSV" class="btn">匯出 CSV</button>
-            <button id="btnTemplate" class="btn ghost">下載匯入範本</button>
+            <button id="polReset" class="btn ghost small" type="button">還原為預設值</button>
+          </div>
+        </div>
+        <p class="muted small">修改後先看「影響預覽」，按「套用」才生效並寫入修改紀錄。百分比欄位直接填數字（20 = 20%）。</p>
+        <form id="policyForm" autocomplete="off"></form>
+        <div id="policyDiff" class="policy-diff" hidden></div>
+      </section>
+      <section class="card">
+        <div class="policy-head">
+          <h2>修改紀錄</h2>
+          <div class="btn-row">
+            <select id="auditFilter" class="small-select">
+              <option value="">全部</option>
+              <option value="policy">定價政策</option>
+              <option value="approve">主管核准</option>
+              <option value="item">商品</option>
+              <option value="price">標價／售出</option>
+              <option value="data">匯入／備份</option>
+              <option value="system">系統</option>
+            </select>
+            <button id="auditExport" class="btn small" type="button">匯出 CSV</button>
+          </div>
+        </div>
+        <div class="table-wrap short"><table class="audit"><thead><tr><th>時間</th><th>類別</th><th>內容</th></tr></thead><tbody id="auditBody"></tbody></table></div>
+      </section>
+    </section>
+
+    <!-- ======================= 資料管理 ======================= -->
+    <section id="tab-data" class="tab-panel" role="tabpanel" hidden>
+      <div class="grid two">
+        <section class="card">
+          <h2>Excel／CSV</h2>
+          <div class="btn-row">
+            <button id="dExportXLSX" class="btn success" type="button">匯出 Excel</button>
+            <button id="dExportCSV" class="btn" type="button">匯出 CSV</button>
+            <button id="dTemplate" class="btn ghost" type="button">下載匯入範本</button>
           </div>
           <div class="grid two" style="margin-top:12px">
-            <div class="form-row">
-              <label for="importMode">匯入方式</label>
-              <select id="importMode">
-                <option value="append">附加到目前清單</option>
-                <option value="replace">取代整份清單</option>
-              </select>
-            </div>
-            <div class="form-row checkbox-row">
-              <label class="checkbox"><input id="importGlobals" type="checkbox"/> 一併匯入「全域參數」工作表</label>
-            </div>
+            <label class="field">匯入方式<select id="dMode">
+              <option value="upsert">依庫存編號更新，其餘新增（建議）</option>
+              <option value="append">只新增，同編號略過</option>
+              <option value="replace">取代整份清單</option>
+            </select></label>
+            <label class="check"><input id="dWithPolicy" type="checkbox"/> 一併匯入「定價政策」工作表（需主管 PIN）</label>
           </div>
-          <label class="file" style="margin-top:12px">
-            <input id="fileImport" type="file" accept=".xlsx,.xls,.csv"/>
-            <span>選擇 Excel／CSV 檔匯入…</span>
-          </label>
-          <small class="muted">欄位依標題辨識（名稱、分類、購買日、回收日、成本、毛利率、市場價、市價調整％、維修、維修備註、月係數覆寫）。售價等計算欄位會略過、重新計算。日期可用 2025/8/4、2025-08-04 或民國 114/8/4。</small>
-          <div id="importReport" class="import-report" hidden></div>
-        </div>
-        <div class="subpanel">
-          <h3>完整備份（含全域參數）</h3>
-          <p class="muted">所有變更會自動存在這台電腦的瀏覽器裡；換電腦或清除瀏覽資料前，請先下載備份。</p>
+          <label class="file"><input id="dFile" type="file" accept=".xlsx,.xls,.csv"/><span>選擇 Excel／CSV 檔匯入…</span></label>
+          <p class="muted small">依標題辨識欄位，順序不拘。重複匯入同一份檔案不會變兩份（依庫存編號、序號，或名稱＋回收日＋成本比對）。v8 匯出的檔案也能匯入，毛利率會自動換算。</p>
+          <div id="dReport" class="report" hidden></div>
+        </section>
+        <section class="card">
+          <h2>完整備份</h2>
+          <p class="muted small">資料存在這台電腦的瀏覽器裡。換電腦、清除瀏覽資料前，請先下載備份。</p>
           <div class="btn-row">
-            <button id="btnExportJSON" class="btn primary">下載備份（JSON）</button>
-            <label class="file">
-              <input id="fileImportJSON" type="file" accept=".json,application/json"/>
-              <span>從備份還原…</span>
-            </label>
+            <button id="dBackup" class="btn primary" type="button">下載完整備份（JSON）</button>
+            <label class="file"><input id="dRestore" type="file" accept=".json,application/json"/><span>從備份還原…</span></label>
           </div>
           <div class="btn-row" style="margin-top:12px">
-            <button id="btnLoadSample" class="btn ghost">載入範例資料</button>
-            <button id="btnClearAll" class="btn danger">清空清單</button>
+            <button id="dSample" class="btn ghost" type="button">改用範例資料</button>
+            <button id="dClear" class="btn danger" type="button">清空清單</button>
           </div>
-        </div>
+          <div id="dV8" class="v8-note" hidden></div>
+          <p id="dInfo" class="muted small"></p>
+        </section>
       </div>
-    </section>
-
-    <section class="card">
-      <h2>回收清單</h2>
-      <div class="kpis">
-        <div class="kpi"><span class="kpi-label">筆數</span><span id="kpiCount" class="kpi-value mono">0</span></div>
-        <div class="kpi"><span class="kpi-label">總成本</span><span id="kpiCost" class="kpi-value mono">0</span></div>
-        <div class="kpi"><span class="kpi-label">二手總價</span><span id="kpiPrice" class="kpi-value mono">0</span></div>
-        <div class="kpi"><span class="kpi-label">總毛利</span><span id="kpiProfit" class="kpi-value mono">0</span></div>
-        <div class="kpi"><span class="kpi-label">整體毛利率（毛利÷售價）</span><span id="kpiMargin" class="kpi-value mono">—</span></div>
-      </div>
-      <div class="table-wrap">
-        <table id="itemsTable">
-          <thead>
-            <tr>
-              <th>#</th>
-              <th>名稱</th>
-              <th>分類</th>
-              <th>購買日</th>
-              <th>回收日</th>
-              <th>庫存天數</th>
-              <th>第N月(購買)</th>
-              <th>第N月(回收)</th>
-              <th>成本</th>
-              <th>毛利率</th>
-              <th>市場價</th>
-              <th>市價調整％</th>
-              <th>最終售價</th>
-              <th>毛利額</th>
-              <th>維修</th>
-              <th>備註</th>
-              <th>月係數覆寫（1–18，用逗號/空白）</th>
-              <th>操作</th>
-            </tr>
-          </thead>
-          <tbody></tbody>
-          <tfoot>
-            <tr>
-              <td colspan="12" class="right">篩選結果合計：</td>
-              <td id="sumPrice" class="mono">0</td>
-              <td id="sumProfit" class="mono">0</td>
-              <td colspan="4"></td>
-            </tr>
-          </tfoot>
-        </table>
-      </div>
-      <p id="emptyHint" class="muted empty-hint" hidden>清單是空的。用上方「新增回收品」或「匯入 Excel」加入資料。</p>
-    </section>
-
-    <section class="card subtle">
-      <h3>8.7.1 Pro 變更摘要</h3>
-      <ul>
-        <li>新預設：逾期階梯加上 <b>180 天 -25%</b>；180 天後最低到 <b>成本 8 折</b>。舊存檔若仍是舊預設會自動升級，自己改過的設定保留。</li>
-      </ul>
-      <h3>8.7 Pro 變更摘要</h3>
-      <ul>
-        <li>修正：「不得低於市場價 X％」改以原始市價計算（8.6 以前誤用調整後市價，預設下售價被鎖在市價 99.75% 以上，降價無效）。</li>
-        <li>新增：<b>底線依庫齡放寬</b> — 庫存 ≥90 天底線降為成本、≥180 天不設成本底線（可低於成本，標示需主管核准）；天數與幅度可調。</li>
-      </ul>
-      <h3>8.6 Pro 變更摘要</h3>
-      <ul>
-        <li>修正：v8.5 載入即當機（缺少篩選／批次按鈕），所有功能恢復正常。</li>
-        <li>新規則：<b>滿 N 個月 = 第 N 月，未滿 1 個月不套係數</b>；<b>尾數往下取，不破底線</b>。</li>
-        <li>新增：自動存檔、JSON 完整備份、Excel／CSV 匯入匯出與範本、篩選（分類／關鍵字／庫存天數／維修／警示）與批次套用、刪除可復原。</li>
-        <li>修正：診斷模式不再把診斷文字寫進備註；表格編輯不會跳掉游標；按月生成階梯改為逐月遞增。</li>
-      </ul>
     </section>
   </main>
 
+  <!-- 商品明細 -->
+  <aside id="drawer" class="drawer" aria-hidden="true" aria-labelledby="drawerTitle">
+    <div class="drawer-inner" role="dialog" aria-modal="false">
+      <div class="drawer-head">
+        <div><div id="drawerSku" class="mono muted small"></div><h2 id="drawerTitle"></h2></div>
+        <button id="drawerClose" class="btn ghost small" type="button" aria-label="關閉">✕</button>
+      </div>
+      <div id="drawerBody"></div>
+    </div>
+  </aside>
+  <div id="drawerShade" class="shade" hidden></div>
+
+  <!-- PIN 對話框 -->
+  <div id="pinModal" class="modal" hidden>
+    <form id="pinForm" class="modal-box" autocomplete="off">
+      <h3 id="pinTitle">需要主管 PIN</h3>
+      <p id="pinReason" class="muted small"></p>
+      <input id="pinInput" type="password" inputmode="numeric" placeholder="主管 PIN" autocomplete="off"/>
+      <p id="pinError" class="warn-text small" hidden>PIN 不正確</p>
+      <div class="btn-row end">
+        <button id="pinCancel" class="btn ghost" type="button">取消</button>
+        <button class="btn primary" type="submit">確認</button>
+      </div>
+    </form>
+  </div>
+
   <div id="toast" class="toast" role="status" aria-live="polite" hidden>
     <span id="toastMsg"></span>
-    <button id="toastUndo" class="btn ghost small" hidden>復原</button>
+    <button id="toastUndo" class="btn ghost small" type="button" hidden>復原</button>
   </div>
 
   <footer class="app-footer">
-    <span>© 2025–2026 SINYA (demo). Built for GitHub Pages deployment.</span>
-    <a href="README.md">README</a>
+    <span>© 2025–2026 SINYA 二手 PC 定價（GitHub Pages）</span>
+    <span><a href="README.md">說明</a> · <a href="docs/INTEGRATION_SPEC.md">整合規格</a> · <a href="CHANGELOG.md">更新紀錄</a></span>
   </footer>
 
-  <script src="script.js"></script>
+  <script type="module" src="js/app.js"></script>
 </body>
 </html>

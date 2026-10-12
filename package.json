@@ -1,0 +1,14 @@
+{
+  "name": "sinya-usedpc-dashboard",
+  "version": "9.0.0",
+  "private": true,
+  "type": "module",
+  "description": "SINYA 二手 PC 定價儀表板（GitHub Pages 靜態網站）",
+  "scripts": {
+    "test": "node --test \"tests/*.test.mjs\"",
+    "test:e2e": "node e2e/smoke.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.56.0"
+  }
+}

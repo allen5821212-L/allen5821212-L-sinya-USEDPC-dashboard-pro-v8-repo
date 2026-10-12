@@ -1,0 +1,20 @@
+name: 測試
+on:
+  push:
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: 單元測試（定價引擎、資料模型、匯入匯出、經營分析）
+        run: npm test
+      - name: 安裝瀏覽器
+        run: npx playwright install --with-deps chromium
+      - name: 瀏覽器煙霧測試
+        run: npm run test:e2e
